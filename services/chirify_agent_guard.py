@@ -265,7 +265,7 @@ class Gate2ConfirmationManager:
         msg = (
             f"{confirmation_id}|{session_id}|{tool_name}|"
             f"{_canonical_json(normalized_arguments)}|{expires_at_epoch:.6f}"
-        ).encode("utf-8")
+        ).encode()
         return hmac.new(self._secret, msg, hashlib.sha256).hexdigest()
 
     def request_confirmation(

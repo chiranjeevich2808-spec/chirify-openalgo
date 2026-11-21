@@ -383,7 +383,7 @@ class ApiKeyNonceLockRegistry:
         key = (api_key or "").strip()
         if not ex or not key:
             raise ValueError("exchange_id and api_key must both be non-empty.")
-        return hashlib.sha256(f"{ex}:{key}".encode("utf-8")).hexdigest()
+        return hashlib.sha256(f"{ex}:{key}".encode()).hexdigest()
 
     def register(self, exchange_id: str, api_key: str, *, holder_id: str) -> str:
         """Acquire exclusive nonce lock for ``(exchange_id, api_key)``."""

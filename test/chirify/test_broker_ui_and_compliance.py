@@ -538,7 +538,6 @@ def test_chirify_status_public_before_login_and_detailed_when_authenticated(
     _isolated_environment_and_stores: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    worm_file = _isolated_environment_and_stores["worm_file"]
     egress_file = _isolated_environment_and_stores["egress_file"]
 
     monkeypatch.setenv("CHIRIFY_MANAGED_POD", "true")
@@ -565,6 +564,7 @@ def test_chirify_status_public_before_login_and_detailed_when_authenticated(
     pub_resp = anon_client.get("/api/v1/chirify/status")
     assert pub_resp.status_code == 200
     assert pub_resp.headers.get("Cache-Control") == "no-store"
+    assert pub_resp.headers.get("X-Content-Type-Options") == "nosniff"
     pub = pub_resp.get_json()
 
     assert pub["license"] == "AGPL-3.0"
@@ -903,6 +903,7 @@ def test_k8s_healthz_readyz_and_prometheus_metrics_probes(
     hz = anon.get("/healthz")
     assert hz.status_code == 200
     assert hz.headers.get("Cache-Control") == "no-store"
+    assert hz.headers.get("X-Content-Type-Options") == "nosniff"
     assert hz.get_json() == {
         "status": "ok",
         "service": "chirify-openalgo",
@@ -912,6 +913,8 @@ def test_k8s_healthz_readyz_and_prometheus_metrics_probes(
     # 2. GET /readyz returns 503 while app.db_ready is unset
     rz_booting = anon.get("/readyz")
     assert rz_booting.status_code == 503
+    assert rz_booting.headers.get("Cache-Control") == "no-store"
+    assert rz_booting.headers.get("X-Content-Type-Options") == "nosniff"
     rz_boot_body = rz_booting.get_json()
     assert rz_boot_body["status"] == "not_ready"
     assert rz_boot_body["db_ready"] is False
@@ -922,6 +925,7 @@ def test_k8s_healthz_readyz_and_prometheus_metrics_probes(
     rz_ok = anon.get("/readyz")
     assert rz_ok.status_code == 200
     assert rz_ok.headers.get("Cache-Control") == "no-store"
+    assert rz_ok.headers.get("X-Content-Type-Options") == "nosniff"
     rz_ok_body = rz_ok.get_json()
     assert rz_ok_body["status"] == "ready"
     assert rz_ok_body["db_ready"] is True
@@ -970,6 +974,7 @@ def test_k8s_healthz_readyz_and_prometheus_metrics_probes(
         "text/plain; version=0.0.4; charset=utf-8"
     )
     assert m_resp.headers.get("Cache-Control") == "no-store"
+    assert m_resp.headers.get("X-Content-Type-Options") == "nosniff"
     metrics_text = m_resp.get_data(as_text=True)
     assert "chirify_pod_analyze_mode 1" in metrics_text
     assert "chirify_pod_kill_switch_engaged 1" in metrics_text
@@ -986,3 +991,39 @@ def test_k8s_healthz_readyz_and_prometheus_metrics_probes(
     assert '"/metrics"' in app_source
 
 
+def test_security_headers_nosniff_and_no_store_on_probes_metrics_status_and_sso(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """PRR security header regression across /healthz, /readyz, /metrics, /api/v1/chirify/status, and /auth/chirify/sso."""
+    monkeypatch.setenv("CHIRIFY_MANAGED_POD", "true")
+    monkeypatch.setenv("CHIRIFY_TENANT_ID", "ten_sec_hdr_01")
+    monkeypatch.setenv("ZMQ_HOST", "127.0.0.1")
+
+    app = _build_app(csrf_enabled=True)
+    db_event = threading.Event()
+    db_event.set()
+    app.db_ready = db_event
+    client = app.test_client()
+
+    for path, expected_status in (
+        ("/healthz", 200),
+        ("/readyz", 200),
+        ("/metrics", 200),
+        ("/api/v1/chirify/status", 200),
+        ("/auth/chirify/sso", 401),
+    ):
+        resp = client.get(path)
+        assert resp.status_code == expected_status, f"{path} returned {resp.status_code}"
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff", path
+        assert "no-store" in resp.headers.get("Cache-Control", ""), path
+        if path == "/auth/chirify/sso":
+            assert resp.headers.get("Referrer-Policy") == "no-referrer"
+        else:
+            assert resp.headers.get("Cache-Control") == "no-store", path
+
+    # Unready /readyz (503) must also carry strict no-store and nosniff headers
+    db_event.clear()
+    rz_503 = client.get("/readyz")
+    assert rz_503.status_code == 503
+    assert rz_503.headers.get("X-Content-Type-Options") == "nosniff"
+    assert rz_503.headers.get("Cache-Control") == "no-store"

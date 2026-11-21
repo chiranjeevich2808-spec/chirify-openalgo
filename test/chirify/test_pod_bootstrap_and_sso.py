@@ -19,6 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy.pool import NullPool
 
+from blueprints import chirify_sso
 from blueprints.auth import auth_bp
 from blueprints.chirify_sso import (
     SSOTicketReplayError,
@@ -77,7 +78,6 @@ def _isolated_pod_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     sessions = []
 
     for mod in (user_db, auth_db, settings_db, analyzer_db):
-        orig_engine = mod.engine
         orig_session = mod.db_session
         tmp_engine = create_engine(
             db_url,
@@ -671,3 +671,116 @@ def test_full_managed_pod_lifecycle_sandbox_boot_to_dynamic_entitlement_sync_to_
     verification = verify_worm_chain(worm_file)
     assert verification.valid is True
     assert verification.records_checked == len(worm_records)
+
+
+def test_sso_consumed_jtis_bounded_cap_evicts_oldest_expiring_and_logs_warning(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """PRR Memory-DoS regression: _CONSUMED_JTIS never exceeds MAX_CONSUMED_JTIS."""
+    assert chirify_sso.MAX_CONSUMED_JTIS == 10_000
+    monkeypatch.setattr(chirify_sso, "MAX_CONSUMED_JTIS", 5)
+
+    warnings_logged: list[str] = []
+    monkeypatch.setattr(
+        chirify_sso.logger,
+        "warning",
+        lambda msg, *args, **kwargs: warnings_logged.append(str(msg)),
+    )
+
+    base_now = 1_800_000_000
+    minted_tickets: list[tuple[str, str]] = []
+    for idx in range(8):
+        jti = f"bounded-jti-{idx:02d}"
+        ticket = mint_sso_ticket(
+            secret=SSO_SECRET,
+            tenant_id="ten_cap_01",
+            email="cap@chirify.io",
+            jti=jti,
+            now_epoch=base_now,
+            ttl_seconds=30 + idx * 5,
+        )
+        minted_tickets.append((jti, ticket))
+
+        claims = verify_and_consume_sso_ticket(
+            ticket,
+            secret=SSO_SECRET,
+            expected_tenant_id="ten_cap_01",
+            now_epoch=base_now + 1,
+        )
+        assert claims.jti == jti
+        assert len(chirify_sso._CONSUMED_JTIS) <= 5
+
+    # Cache stays strictly bounded at cap=5, retaining the 5 freshest active JTIs
+    assert len(chirify_sso._CONSUMED_JTIS) == 5
+    assert set(chirify_sso._CONSUMED_JTIS.keys()) == {
+        f"bounded-jti-{idx:02d}" for idx in range(3, 8)
+    }
+    # High-priority warnings emitted on the 3 evictions (insertions 6, 7, 8)
+    assert len(warnings_logged) == 3
+    assert all("evicted" in w.lower() for w in warnings_logged)
+
+    # Replay protection remains intact for the freshest active window (even at exact cap)
+    for idx in (3, 7):
+        with pytest.raises(SSOTicketReplayError):
+            verify_and_consume_sso_ticket(
+                minted_tickets[idx][1],
+                secret=SSO_SECRET,
+                expected_tenant_id="ten_cap_01",
+                now_epoch=base_now + 1,
+            )
+
+
+def test_sso_endpoint_attaches_nosniff_no_store_and_no_referrer_headers(
+    _isolated_pod_state: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """PRR security header regression for /auth/chirify/sso across 403, 401, 302, and 200."""
+    app = _build_test_app()
+    client = app.test_client()
+
+    # 1. Standalone mode (403)
+    r_disabled = client.get("/auth/chirify/sso?ticket=anything")
+    assert r_disabled.status_code == 403
+    assert r_disabled.headers.get("X-Content-Type-Options") == "nosniff"
+    assert "no-store" in r_disabled.headers.get("Cache-Control", "")
+    assert r_disabled.headers.get("Referrer-Policy") == "no-referrer"
+
+    # Enable managed pod + bootstrap owner
+    monkeypatch.setenv("CHIRIFY_MANAGED_POD", "true")
+    monkeypatch.setenv("CHIRIFY_TENANT_ID", "ten_hdr_01")
+    monkeypatch.setenv("CHIRIFY_TENANT_ADMIN_EMAIL", "headers@chirify.io")
+    monkeypatch.setenv("CHIRIFY_SSO_SECRET", SSO_SECRET)
+    bootstrap_managed_tenant()
+
+    # 2. Invalid ticket (401)
+    r_invalid = client.get("/auth/chirify/sso?ticket=not.a.validjwt")
+    assert r_invalid.status_code == 401
+    assert r_invalid.headers.get("X-Content-Type-Options") == "nosniff"
+    assert "no-store" in r_invalid.headers.get("Cache-Control", "")
+    assert r_invalid.headers.get("Referrer-Policy") == "no-referrer"
+
+    # 3. Valid GET redirect (302)
+    ticket_get = mint_sso_ticket(
+        secret=SSO_SECRET,
+        tenant_id="ten_hdr_01",
+        email="headers@chirify.io",
+        ttl_seconds=60,
+    )
+    r_ok_get = client.get(f"/auth/chirify/sso?ticket={ticket_get}")
+    assert r_ok_get.status_code == 302
+    assert r_ok_get.headers.get("X-Content-Type-Options") == "nosniff"
+    assert "no-store" in r_ok_get.headers.get("Cache-Control", "")
+    assert r_ok_get.headers.get("Referrer-Policy") == "no-referrer"
+
+    # 4. Valid POST JSON (200)
+    ticket_post = mint_sso_ticket(
+        secret=SSO_SECRET,
+        tenant_id="ten_hdr_01",
+        email="headers@chirify.io",
+        ttl_seconds=60,
+    )
+    r_ok_post = app.test_client().post("/auth/chirify/sso", json={"ticket": ticket_post})
+    assert r_ok_post.status_code == 200
+    assert r_ok_post.headers.get("X-Content-Type-Options") == "nosniff"
+    assert "no-store" in r_ok_post.headers.get("Cache-Control", "")
+    assert r_ok_post.headers.get("Referrer-Policy") == "no-referrer"

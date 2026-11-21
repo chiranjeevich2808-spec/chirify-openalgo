@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 from services.chirify_agent_guard import (
+    ORDER_MUTATING_TOOLS,
     Gate2ConfirmationManager,
     Gate3Policy,
-    ORDER_MUTATING_TOOLS,
     PromptBlindOrderGuard,
     filter_surface_tool_schemas,
     verify_remote_mcp_transport,
@@ -22,7 +22,6 @@ from services.chirify_openrouter import (
     OpenRouterKeyRegionMismatchError,
     build_openrouter_config,
 )
-
 
 # =============================================================================
 # OpenRouter Regional Routing & Key Isolation Tests

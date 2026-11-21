@@ -47,6 +47,17 @@ logger = get_logger(__name__)
 chirify_status_bp = Blueprint("chirify_status_bp", __name__, url_prefix="/api/v1/chirify")
 chirify_probes_bp = Blueprint("chirify_probes_bp", __name__)
 
+
+def _apply_security_headers(response: Response) -> Response:
+    """Attach strict Cache-Control and X-Content-Type-Options headers to telemetry & probe routes."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+chirify_status_bp.after_request(_apply_security_headers)
+chirify_probes_bp.after_request(_apply_security_headers)
+
 DEFAULT_CHIRIFY_SOURCE_REPO_URL = "https://github.com/chiranjeevich2808-spec/chirify-openalgo"
 UPSTREAM_OPENALGO_URL = "https://github.com/marketcalls/openalgo"
 EU_AI_ACT_ART50_DISCLOSURE = (

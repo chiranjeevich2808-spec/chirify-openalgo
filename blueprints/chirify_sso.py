@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import heapq
 import hmac
 import json
 import os
@@ -60,6 +61,7 @@ chirify_sso_bp = Blueprint("chirify_sso", __name__, url_prefix="/auth/chirify")
 EXPECTED_SSO_ISSUER = "chirify-control-plane"
 HARD_MAX_SSO_TTL_SECONDS = 120
 IAT_CLOCK_SKEW_GRACE_SECONDS = 5.0
+MAX_CONSUMED_JTIS = 10_000
 ALLOWED_TYP_VALUES: frozenset[str] = frozenset({"JWT", "CHIRIFY-SSO"})
 
 _JTI_LOCK = real_threading.Lock()
@@ -343,6 +345,25 @@ def verify_and_consume_sso_ticket(
         _prune_expired_jtis_locked(now)
         if jti in _CONSUMED_JTIS:
             raise SSOTicketReplayError("SSO ticket jti has already been used.")
+        max_entries = max(1, int(MAX_CONSUMED_JTIS))
+        if len(_CONSUMED_JTIS) >= max_entries:
+            evict_count = len(_CONSUMED_JTIS) - max_entries + 1
+            if evict_count == 1:
+                oldest_keys = [min(_CONSUMED_JTIS, key=_CONSUMED_JTIS.__getitem__)]
+            else:
+                oldest_keys = [
+                    key
+                    for key, _ in heapq.nsmallest(
+                        evict_count, _CONSUMED_JTIS.items(), key=lambda item: item[1]
+                    )
+                ]
+            for key in oldest_keys:
+                _CONSUMED_JTIS.pop(key, None)
+            logger.warning(
+                "[ChirifySSO] Consumed JTI replay cache reached capacity "
+                f"({max_entries}); evicted {len(oldest_keys)} oldest-expiring "
+                "entry(s) to prevent unbounded memory growth."
+            )
         _CONSUMED_JTIS[jti] = float(exp)
 
     raw_username = payload.get("username")
@@ -397,10 +418,11 @@ def _emit_sso_worm_event(payload: Mapping[str, Any]) -> None:
 
 @chirify_sso_bp.after_request
 def _apply_sso_no_store_headers(response: Response) -> Response:
-    """Prevent browser/proxy caching and Referer leakage of one-time SSO tickets."""
+    """Prevent browser/proxy caching, MIME sniffing, and Referer leakage of one-time SSO tickets."""
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
     response.headers["Pragma"] = "no-cache"
     response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 
