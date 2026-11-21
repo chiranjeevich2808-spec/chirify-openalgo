@@ -369,6 +369,8 @@ def create_app():
     csrf.exempt(internal_ops_bp)
     app.register_blueprint(chirify_sso_bp)  # Register single-use Chirify SSO handoff blueprint
     csrf.exempt(chirify_sso_bp)
+    app.register_blueprint(chirify_status_bp)  # Public AGPL-3.0 attribution & pod telemetry
+    csrf.exempt(chirify_status_bp)
 
     # Remote MCP (HTTP + OAuth) — opt-in via MCP_HTTP_ENABLED. Off by default.
     # Pre-flight refusal: must NEVER coexist with FLASK_DEBUG=True (debug-mode

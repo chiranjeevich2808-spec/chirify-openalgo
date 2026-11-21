@@ -18,16 +18,27 @@ EXCHANGE_BSE_INDEX = "BSE_INDEX"  # BSE Index
 EXCHANGE_MCX_INDEX = "MCX_INDEX"  # MCX Index (declared by Angel + Zerodha plugins)
 EXCHANGE_GLOBAL_INDEX = "GLOBAL_INDEX"  # Global indices (US30, JAPAN225, HANGSENG, GIFTNIFTY, etc.)
 EXCHANGE_CRYPTO = "CRYPTO"  # Crypto Exchanges (broker-agnostic; brexchange carries broker name)
+EXCHANGE_US_EQUITY = "US_EQUITY"  # US Equities (NYSE, NASDAQ, ARCA, IEX)
+EXCHANGE_US_OPTIONS = "US_OPTIONS"  # US Options (OPRA)
+EXCHANGE_EU_EQUITY = "EU_EQUITY"  # European Equities (XETRA, LSE, EURONEXT)
+EXCHANGE_FUTURES = "FUTURES"  # Global Futures (CME, CBOT, NYMEX, COMEX, EUREX)
+EXCHANGE_FOREX = "FOREX"  # Spot & Institutional FX (IDEALPRO)
+EXCHANGE_CRYPTO_SWAP = "CRYPTO_SWAP"  # Crypto Linear & Inverse Perpetual Swaps
+EXCHANGE_CRYPTO_OPTIONS = "CRYPTO_OPTIONS"  # Crypto Options (Deribit, Bybit, OKX)
 
 # Set of all crypto-family exchanges.
 # Use `exchange in CRYPTO_EXCHANGES` instead of `exchange == "CRYPTO"` so that
 # onboarding a second crypto exchange (e.g. BINANCE, BYBIT) is a one-line change here.
-CRYPTO_EXCHANGES: set[str] = {EXCHANGE_CRYPTO}
+CRYPTO_EXCHANGES: set[str] = {
+    EXCHANGE_CRYPTO,
+    EXCHANGE_CRYPTO_SWAP,
+    EXCHANGE_CRYPTO_OPTIONS,
+}
 
 # Set of broker names that map to crypto exchanges.
 # Used to select the correct download cutoff timezone (UTC vs IST).
 # Add new crypto brokers here — the smart download logic picks this up automatically.
-CRYPTO_BROKERS: set[str] = {"deltaexchange"}
+CRYPTO_BROKERS: set[str] = {"deltaexchange", "ccxt"}
 
 # Instrument type for crypto perpetual futures (used in symbol DB queries).
 INSTRUMENT_PERPFUT: str = "PERPFUT"
@@ -47,6 +58,8 @@ FNO_EXCHANGES: set[str] = {
     EXCHANGE_BCD,
     EXCHANGE_NCDEX,
     EXCHANGE_NCO,
+    EXCHANGE_US_OPTIONS,
+    EXCHANGE_FUTURES,
 } | CRYPTO_EXCHANGES
 
 VALID_EXCHANGES = [
@@ -64,6 +77,13 @@ VALID_EXCHANGES = [
     EXCHANGE_MCX_INDEX,
     EXCHANGE_GLOBAL_INDEX,
     EXCHANGE_CRYPTO,
+    EXCHANGE_US_EQUITY,
+    EXCHANGE_US_OPTIONS,
+    EXCHANGE_EU_EQUITY,
+    EXCHANGE_FUTURES,
+    EXCHANGE_FOREX,
+    EXCHANGE_CRYPTO_SWAP,
+    EXCHANGE_CRYPTO_OPTIONS,
 ]
 
 # Product Types
@@ -103,6 +123,13 @@ EXCHANGE_BADGE_COLORS = {
     EXCHANGE_MCX_INDEX: "badge-primary",
     EXCHANGE_GLOBAL_INDEX: "badge-info",
     EXCHANGE_CRYPTO: "badge-primary",
+    EXCHANGE_US_EQUITY: "badge-info",
+    EXCHANGE_US_OPTIONS: "badge-secondary",
+    EXCHANGE_EU_EQUITY: "badge-accent",
+    EXCHANGE_FUTURES: "badge-warning",
+    EXCHANGE_FOREX: "badge-neutral",
+    EXCHANGE_CRYPTO_SWAP: "badge-primary",
+    EXCHANGE_CRYPTO_OPTIONS: "badge-secondary",
 }
 
 # Required Fields for Order Placement

@@ -108,6 +108,9 @@ BROKER_NAMES = {
     "wisdom": "Wisdom Capital",
     "zebu": "Zebu",
     "zerodha": "Zerodha",
+    "alpaca": "Alpaca Markets — US Equities, Options & Crypto",
+    "ibkr": "Interactive Brokers — Global Multi-Asset",
+    "ccxt": "CCXT Unified Crypto — 103+ Spot, Perp & Options Venues",
 }
 
 _apply_lock = Lock()

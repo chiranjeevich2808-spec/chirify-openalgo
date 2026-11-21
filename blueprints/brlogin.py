@@ -768,6 +768,12 @@ def _broker_callback(broker, para=None):
         auth_token, error_message = auth_function(code)
         forward_url = "broker.html"
 
+    elif broker in ("alpaca", "ibkr", "ccxt"):
+        code = request.args.get("code")
+        logger.debug("%s broker - saved-keys authentication initiated", broker)
+        auth_token, error_message = auth_function(code)
+        forward_url = "broker.html"
+
     elif broker == "sahi":
         if request.method == "GET":
             # The login card asks for the TOTP code of a TOTP key; a Regular

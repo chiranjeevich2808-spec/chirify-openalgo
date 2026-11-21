@@ -165,9 +165,18 @@ def _b64url_decode(segment: str) -> bytes:
     return base64.urlsafe_b64decode(padded.encode("ascii"))
 
 
-def is_live_gate_enforced(env: Mapping[str, str] | None = None) -> bool:
-    """Return True iff ``CHIRIFY_ENFORCE_LIVE_GATE`` is enabled (or managed pod default)."""
+def is_emergency_kill_switch_engaged(env: Mapping[str, str] | None = None) -> bool:
+    """Return True iff the DORA/SEBI emergency kill switch (``CHIRIFY_EMERGENCY_KILL_SWITCH``) is engaged."""
     source = env if env is not None else os.environ
+    raw = str(source.get("CHIRIFY_EMERGENCY_KILL_SWITCH") or "").strip().lower()
+    return raw in TRUTHY_VALUES
+
+
+def is_live_gate_enforced(env: Mapping[str, str] | None = None) -> bool:
+    """Return True iff ``CHIRIFY_ENFORCE_LIVE_GATE`` or ``CHIRIFY_EMERGENCY_KILL_SWITCH`` is enabled."""
+    source = env if env is not None else os.environ
+    if is_emergency_kill_switch_engaged(source):
+        return True
     raw = str(source.get("CHIRIFY_ENFORCE_LIVE_GATE") or "").strip().lower()
     if raw:
         return raw in TRUTHY_VALUES
@@ -265,8 +274,24 @@ def verify_entitlement_token(
     return claims
 
 
-def evaluate_live_gate(claims: EntitlementClaims) -> LiveGateVerdict:
-    """Deterministically evaluate Cohort-A sandbox, risk, and SEBI compliance gates."""
+def evaluate_live_gate(
+    claims: EntitlementClaims,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> LiveGateVerdict:
+    """Deterministically evaluate Cohort-A sandbox, risk, SEBI, and emergency kill-switch gates."""
+    if is_emergency_kill_switch_engaged(env):
+        reason = (
+            "Emergency compliance kill switch (CHIRIFY_EMERGENCY_KILL_SWITCH) is engaged; "
+            "all Live mode activations are unconditionally blocked."
+        )
+        return LiveGateVerdict(
+            allowed=False,
+            code="emergency_kill_switch_engaged",
+            message=f"Live mode blocked [emergency_kill_switch_engaged]: {reason}",
+            reasons=(reason,),
+        )
+
     reasons: list[str] = []
     primary_code = "ok"
 
@@ -372,7 +397,8 @@ def check_live_mode_transition(
 
     Switching *into* Analyze/Sandbox mode (``target_mode=True``) is always allowed.
     Switching *into* Live mode (``target_mode=False``) is gated whenever
-    ``CHIRIFY_ENFORCE_LIVE_GATE`` is truthy (or when ``claims`` is passed directly).
+    ``CHIRIFY_ENFORCE_LIVE_GATE`` or ``CHIRIFY_EMERGENCY_KILL_SWITCH`` is truthy
+    (or when ``claims`` is passed directly).
     """
     # Entering or staying in Sandbox/Analyze mode is always safe and allowed.
     if target_mode:
@@ -383,6 +409,18 @@ def check_live_mode_transition(
         )
 
     effective_env = env if env is not None else os.environ
+    if is_emergency_kill_switch_engaged(effective_env):
+        reason = (
+            "Emergency compliance kill switch (CHIRIFY_EMERGENCY_KILL_SWITCH) is engaged; "
+            "all Live mode activations are unconditionally blocked."
+        )
+        return LiveGateVerdict(
+            allowed=False,
+            code="emergency_kill_switch_engaged",
+            message=f"Live mode blocked [emergency_kill_switch_engaged]: {reason}",
+            reasons=(reason,),
+        )
+
     if claims is None and not is_live_gate_enforced(effective_env):
         return LiveGateVerdict(
             allowed=True,
@@ -415,7 +453,7 @@ def check_live_mode_transition(
             }
         )
 
-    return evaluate_live_gate(resolved_claims)
+    return evaluate_live_gate(resolved_claims, env=effective_env)
 
 
 def enforce_live_mode_transition(

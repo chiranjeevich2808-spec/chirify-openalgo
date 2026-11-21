@@ -30,9 +30,31 @@ def authenticate_broker(
     nonce_registry: ApiKeyNonceLockRegistry | None = None,
 ) -> tuple[str | None, str | None]:
     """Validate CCXT credentials, acquire SHA-256 nonce lock, and optionally enable sandbox."""
-    ex_id = (exchange_id or os.getenv("CCXT_EXCHANGE_ID") or "binance").strip().lower()
+    raw_market = (os.getenv("BROKER_API_KEY_MARKET") or "").strip().lower()
+    market_ex_id = ""
+    market_sandbox = False
+    if raw_market:
+        parts = [p.strip() for p in raw_market.split(":") if p.strip()]
+        if parts:
+            market_ex_id = parts[0]
+            market_sandbox = any(flag in {"testnet", "sandbox"} for flag in parts[1:])
+
     key = (api_key if api_key is not None else os.getenv("BROKER_API_KEY", "")).strip()
+    inline_ex_id = ""
+    if ":::" in key:
+        inline_ex_id, key = [seg.strip() for seg in key.split(":::", 1)]
+        inline_ex_id = inline_ex_id.lower()
+
+    ex_id = (
+        exchange_id or os.getenv("CCXT_EXCHANGE_ID") or market_ex_id or inline_ex_id or "binance"
+    ).strip().lower()
     secret = (api_secret if api_secret is not None else os.getenv("BROKER_API_SECRET", "")).strip()
+    resolved_password = (
+        password
+        if password is not None
+        else (os.getenv("CCXT_PASSWORD") or os.getenv("BROKER_API_SECRET_MARKET") or None)
+    )
+    resolved_sandbox = bool(sandbox or market_sandbox)
 
     if not key:
         return None, "BROKER_API_KEY is not set"
@@ -41,12 +63,12 @@ def authenticate_broker(
 
     registry = nonce_registry or GLOBAL_CCXT_NONCE_REGISTRY
     try:
-        build_ccxt_exchange_config(api_key=key, api_secret=secret, password=password)
+        build_ccxt_exchange_config(api_key=key, api_secret=secret, password=resolved_password)
         registry.register(ex_id, key, holder_id=holder_id)
 
         if exchange_instance is not None:
-            sb = configure_sandbox_mode(exchange_instance, enabled=sandbox)
-            if sandbox and not sb.supported:
+            sb = configure_sandbox_mode(exchange_instance, enabled=resolved_sandbox)
+            if resolved_sandbox and not sb.supported:
                 registry.release(ex_id, key, holder_id=holder_id)
                 return None, sb.reason
             if hasattr(exchange_instance, "fetch_balance"):

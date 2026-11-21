@@ -116,7 +116,20 @@ class SearchSchema(Schema):
 #: three schemas, and NCO was added to the platform without reaching any of
 #: them, so every expiry and option-chain request for NSE commodities was
 #: rejected at the API boundary before the service ever ran. See #1748.
-F_AND_O_EXCHANGES = ["NFO", "BFO", "MCX", "CDS", "NCO", "BCD", "NCDEX", "CRYPTO"]
+F_AND_O_EXCHANGES = [
+    "NFO",
+    "BFO",
+    "MCX",
+    "CDS",
+    "NCO",
+    "BCD",
+    "NCDEX",
+    "CRYPTO",
+    "US_OPTIONS",
+    "FUTURES",
+    "CRYPTO_SWAP",
+    "CRYPTO_OPTIONS",
+]
 
 
 class ExpirySchema(Schema):

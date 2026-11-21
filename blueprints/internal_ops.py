@@ -7,6 +7,7 @@ Chirify Control Plane and Cilium static-egress failover controller:
 - ``POST /internal/v1/failover-reconcile``
 - ``POST /internal/v1/historify/export-parquet``
 - ``POST /internal/v1/entitlements/sync``
+- ``POST /internal/v1/compliance/kill-switch``
 
 Security controls:
 1. Restricted strictly to loopback, RFC1918 private, link-local, ULA, or
@@ -509,4 +510,96 @@ def sync_entitlements():
         ),
         200,
     )
+
+
+_KILL_SWITCH_LOCK = real_threading.Lock()
+
+
+@internal_ops_bp.route("/compliance/kill-switch", methods=["POST"])
+def toggle_compliance_kill_switch():
+    """DORA Article 30 / SEBI emergency unconditional kill-switch endpoint."""
+    auth_error = _require_internal_ops_auth()
+    if auth_error is not None:
+        return auth_error
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or "engaged" not in body:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "code": "invalid_payload",
+                    "message": "Request body must be a JSON object containing boolean 'engaged'.",
+                }
+            ),
+            400,
+        )
+
+    raw_engaged = body.get("engaged")
+    if isinstance(raw_engaged, bool):
+        engaged = raw_engaged
+    elif isinstance(raw_engaged, str) and raw_engaged.strip().lower() in {"true", "false"}:
+        engaged = raw_engaged.strip().lower() == "true"
+    else:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "code": "invalid_engaged_flag",
+                    "message": "Field 'engaged' must be a boolean (true or false).",
+                }
+            ),
+            400,
+        )
+
+    default_reason = "dora_emergency_halt" if engaged else "dora_emergency_cleared"
+    reason = str(body.get("reason") or default_reason).strip() or default_reason
+
+    from datetime import UTC, datetime
+
+    from database import settings_db
+    from services.analyzer_service import apply_analyze_mode
+
+    toggled_at_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    with _KILL_SWITCH_LOCK:
+        settings_db.Base.metadata.create_all(settings_db.engine)
+        if engaged:
+            os.environ["CHIRIFY_EMERGENCY_KILL_SWITCH"] = "true"
+            current_analyze_mode = bool(apply_analyze_mode(True))
+        else:
+            os.environ["CHIRIFY_EMERGENCY_KILL_SWITCH"] = "false"
+            current_analyze_mode = bool(settings_db.get_analyze_mode())
+
+    worm_record = _emit_internal_worm_safe(
+        "chirify_emergency_kill_switch_toggled",
+        {
+            "priority": "CRITICAL" if engaged else "HIGH",
+            "engaged": engaged,
+            "reason": reason,
+            "analyze_mode": current_analyze_mode,
+            "timestamp_utc": toggled_at_utc,
+            "tenant_id": (os.getenv("CHIRIFY_TENANT_ID") or "").strip() or None,
+        },
+    )
+
+    return (
+        jsonify(
+            {
+                "status": "ok",
+                "event": "chirify_emergency_kill_switch_toggled",
+                "engaged": engaged,
+                "kill_switch_engaged": engaged,
+                "reason": reason,
+                "analyze_mode": current_analyze_mode,
+                "worm_audit": {
+                    "seq_no": worm_record.seq_no,
+                    "timestamp_utc": worm_record.timestamp_utc,
+                    "record_hash": worm_record.record_hash,
+                },
+            }
+        ),
+        200,
+    )
+
 

@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import time
@@ -485,9 +486,18 @@ class PromptBlindOrderGuard:
         """
         pol = self._policy
 
-        # 1. Global kill switch (in-memory flag or filesystem sentinel)
-        if pol.kill_switch_engaged or (
-            pol.kill_switch_file is not None and pol.kill_switch_file.exists()
+        # 1. Global kill switch (in-memory flag, process-wide emergency env var, or filesystem sentinel)
+        env_kill = (os.getenv("CHIRIFY_EMERGENCY_KILL_SWITCH") or "").strip().lower() in {
+            "true",
+            "1",
+            "yes",
+            "t",
+            "on",
+        }
+        if (
+            pol.kill_switch_engaged
+            or env_kill
+            or (pol.kill_switch_file is not None and pol.kill_switch_file.exists())
         ):
             return Gate3Verdict(
                 allowed=False,

@@ -1084,6 +1084,111 @@ GUIDES = {
         "active Kite Connect subscription.",
         "redirect_hint": "Register this exact address as the redirect URL in your broker app.",
     },
+    "alpaca": {
+        "name": "Alpaca Markets — US Equities, Options & Crypto",
+        "sign_in": "saved_keys",
+        "fields": (
+            {
+                "hint": "Alpaca API Key ID: starts with PK for Paper "
+                "(https://paper-api.alpaca.markets) or AK for Live "
+                "(https://api.alpaca.markets). Strictly isolated to prevent "
+                "cross-environment routing.",
+                "key": "api_key",
+                "label": "API Key ID (Paper PK* / Live AK*)",
+                "required": True,
+                "secret": False,
+            },
+            {
+                "hint": "Alpaca API Secret Key paired with your PK* or AK* key. "
+                "Governed by a 200 req/min token-bucket rate limiter.",
+                "key": "api_secret",
+                "label": "API Secret Key",
+                "required": True,
+                "secret": True,
+            },
+        ),
+        "banner": "Login with Alpaca Markets signs you in with one click using your saved "
+        "Paper (PK*) or Live (AK*) API Key and Secret. Strict Paper/Live host "
+        "isolation and a 200 req/min token-bucket rate governor are enforced "
+        "automatically.",
+        "redirect_hint": "",
+    },
+    "ibkr": {
+        "name": "Interactive Brokers — Global Multi-Asset",
+        "sign_in": "saved_keys",
+        "fields": (
+            {
+                "hint": "IBKR Unified OAuth 2.0 Web API access token, or session key "
+                "paired with the local ib_async TWS/IB Gateway sidecar (127.0.0.1:4002).",
+                "key": "api_key",
+                "label": "OAuth 2.0 Access Token / Session Key",
+                "required": True,
+                "secret": False,
+            },
+            {
+                "hint": "Optional OAuth 2.0 signing secret or session credential for "
+                "IBKR Unified Web API (/iserver single-session keepalive).",
+                "key": "api_secret",
+                "label": "OAuth 2.0 Secret / Session Credential",
+                "required": False,
+                "secret": True,
+            },
+            {
+                "hint": "Optional IBKR username or local ib_async TWS Sidecar socket "
+                "endpoint (default 127.0.0.1:4002, 45 msg/sec pacing governor).",
+                "key": "api_key_market",
+                "label": "IBKR Username / TWS Sidecar (127.0.0.1:4002)",
+                "required": False,
+                "secret": False,
+            },
+        ),
+        "banner": "Login with Interactive Brokers signs you in with one click via the "
+        "OAuth 2.0 Unified Web API (/iserver single-session guard & tickle keepalive) "
+        "or local ib_async TWS Sidecar at 127.0.0.1:4002 (45 msg/sec governor).",
+        "redirect_hint": "",
+    },
+    "ccxt": {
+        "name": "CCXT Unified Crypto — 103+ Spot, Perp & Options Venues",
+        "sign_in": "saved_keys",
+        "fields": (
+            {
+                "hint": "Venue API key (or exchange_id:::api_key) for any of 103+ CCXT "
+                "spot, linear/inverse perpetual swap, or options venues. Protected by a "
+                "SHA-256 duplicate-API-key nonce lock.",
+                "key": "api_key",
+                "label": "API Key",
+                "required": True,
+                "secret": False,
+            },
+            {
+                "hint": "Venue API secret paired with your API key.",
+                "key": "api_secret",
+                "label": "API Secret",
+                "required": True,
+                "secret": True,
+            },
+            {
+                "hint": "Target CCXT Exchange ID (e.g. binance, bybit, okx, deribit, "
+                "kraken, coinbase). Append :testnet or :sandbox for venue testnet mode.",
+                "key": "api_key_market",
+                "label": "Exchange ID & Testnet (e.g. binance, okx:testnet)",
+                "required": False,
+                "secret": False,
+            },
+            {
+                "hint": "Optional API key passphrase required by venues such as OKX, "
+                "KuCoin, or Bitget.",
+                "key": "api_secret_market",
+                "label": "Passphrase (Optional)",
+                "required": False,
+                "secret": True,
+            },
+        ),
+        "banner": "Login with CCXT Unified Crypto signs you in with one click across "
+        "103+ spot, perpetual swap, and options venues using your Exchange ID, "
+        "API Key, Secret, and optional Passphrase or Testnet flag.",
+        "redirect_hint": "",
+    },
 }
 
 
