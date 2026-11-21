@@ -71,15 +71,15 @@ All **39 upstream Indian brokers** remain intact in `.sample.env` (`VALID_BROKER
 ### Unauthenticated Kubernetes Probes, Prometheus Metrics & Public Status
 All endpoints below are registered in `app.py` with CSRF exemption and pre-login / DB-wait bypasses (`Cache-Control: no-store`):
 
-- **`GET /healthz`** — Kubernetes liveness probe. Immediately returns `200 OK` `{"status": "ok", "service": "chirify-openalgo", "tz": "UTC"}` without blocking on DB init.
-- **`GET /readyz`** — Kubernetes readiness probe. Verifies `app.db_ready`, loopback `ZMQ_HOST` (`127.0.0.1` / `localhost`), and static egress IP verification (when `CHIRIFY_REQUIRE_STATIC_EGRESS=true`). Returns `200 OK` `{"status": "ready", "analyze_mode": ..., "kill_switch_engaged": ...}` or `503 Service Unavailable` with diagnostic `reasons`.
+- **`GET` / `HEAD /healthz`** — Kubernetes liveness probe (ALB/K8s `HEAD` compatible). Immediately returns `200 OK` `{"status": "ok", "service": "chirify-openalgo", "tz": "UTC"}` without blocking on DB init.
+- **`GET` / `HEAD /readyz`** — Kubernetes readiness probe. Verifies `app.db_ready`, loopback `ZMQ_HOST` (`127.0.0.1` / `localhost`), and static egress IP verification (when `CHIRIFY_REQUIRE_STATIC_EGRESS=true`). Returns `200 OK` `{"status": "ready", "analyze_mode": ..., "kill_switch_engaged": ...}` or `503 Service Unavailable` with diagnostic `reasons`.
 - **`GET /metrics`** — Prometheus OpenMetrics (`text/plain; version=0.0.4; charset=utf-8`) aligned with `infra/helm/worm-observability/prometheus-slo-rules.yaml`:
   - `chirify_pod_analyze_mode`
   - `chirify_pod_kill_switch_engaged`
   - `chirify_eventbus_worm_events_published_total`
   - `chirify_tenant_static_egress_ip_mismatch_total`
   - `chirify_ib_gateway_api_readiness_probe_success`
-- **`GET /api/v1/chirify/status`** — Public AGPL-3.0 Section 13 source link, EU AI Act Art. 50 disclosure, live-gate verdict, static egress status, OpenRouter region, and WORM chain head hash (attaches non-secret tenant/broker telemetry when signed in or called with `CHIRIFY_INTERNAL_OPS_TOKEN` over a private IP).
+- **`GET /api/v1/chirify/status`** — Public AGPL-3.0 Section 13 source link, EU AI Act Art. 50 disclosure, `enabled_brokers_count`, `zmq_loopback_locked`, live-gate verdict, static egress status, OpenRouter region, and WORM chain head hash (attaches non-secret tenant/broker telemetry when signed in or called with `CHIRIFY_INTERNAL_OPS_TOKEN` over a private IP).
 
 ### Cluster-Private Internal Ops Endpoints (`/internal/v1/*`)
 Restricted strictly to loopback/RFC1918/pod-CGNAT `request.remote_addr` + constant-time `CHIRIFY_INTERNAL_OPS_TOKEN`:

@@ -576,6 +576,8 @@ def test_chirify_status_public_before_login_and_detailed_when_authenticated(
     assert pub["kill_switch_engaged"] is False
     assert pub["static_egress_verified"] is True
     assert pub["openrouter_region"] == "EU"
+    assert pub["zmq_loopback_locked"] is True
+    assert pub["enabled_brokers_count"] == 0
     assert pub["worm_audit"] == {
         "enabled": True,
         "records_count": 1,
@@ -586,6 +588,15 @@ def test_chirify_status_public_before_login_and_detailed_when_authenticated(
     assert pub["live_gate"]["allowed"] is False
     assert pub["authenticated"] is False
     assert "telemetry" not in pub
+
+    # Dynamic VALID_BROKERS & non-loopback ZMQ_HOST are reflected immediately in /api/v1/chirify/status
+    monkeypatch.setenv("VALID_BROKERS", "zerodha,alpaca,ibkr,ccxt")
+    dyn_pub = anon_client.get("/api/v1/chirify/status").get_json()
+    assert dyn_pub["enabled_brokers_count"] == 4
+    assert dyn_pub["zmq_loopback_locked"] is True
+    monkeypatch.setenv("ZMQ_HOST", "0.0.0.0")
+    assert anon_client.get("/api/v1/chirify/status").get_json()["zmq_loopback_locked"] is False
+    monkeypatch.setenv("ZMQ_HOST", "127.0.0.1")
 
     # Custom CHIRIFY_SOURCE_REPO_URL override is honored
     custom_repo = "https://github.com/acme-fork/chirify-openalgo-custom"
