@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, Response, current_app, jsonify, request, session
 
 from blueprints.internal_ops import is_allowed_internal_ip
 from services import chirify_live_gate
@@ -36,11 +36,16 @@ from subscribers.worm_audit_subscriber import (
     verify_worm_chain,
 )
 from utils.logging import get_logger
-from utils.startup_invariants import DEFAULT_EGRESS_STATE_PATH, is_truthy
+from utils.startup_invariants import (
+    ALLOWED_ZMQ_HOSTS,
+    DEFAULT_EGRESS_STATE_PATH,
+    is_truthy,
+)
 
 logger = get_logger(__name__)
 
 chirify_status_bp = Blueprint("chirify_status_bp", __name__, url_prefix="/api/v1/chirify")
+chirify_probes_bp = Blueprint("chirify_probes_bp", __name__)
 
 DEFAULT_CHIRIFY_SOURCE_REPO_URL = "https://github.com/chiranjeevich2808-spec/chirify-openalgo"
 UPSTREAM_OPENALGO_URL = "https://github.com/marketcalls/openalgo"
@@ -239,3 +244,124 @@ def get_chirify_status():
     response = jsonify(payload)
     response.headers["Cache-Control"] = "no-store"
     return response, 200
+
+
+def _resolve_ib_gateway_readiness_gauge() -> int:
+    """Resolve IB Gateway API readiness gauge (`1` = healthy/not stalling, `0` = degraded)."""
+    app_flag = getattr(current_app, "ib_gateway_ready", None)
+    if isinstance(app_flag, bool):
+        return 1 if app_flag else 0
+
+    raw_env = _clean_env_val(os.getenv("CHIRIFY_IB_GATEWAY_READY"))
+    if raw_env:
+        return 1 if is_truthy(raw_env) else 0
+
+    return 1
+
+
+@chirify_probes_bp.route("/healthz", methods=["GET"])
+def pod_healthz():
+    """Unauthenticated Kubernetes liveness probe (`GET /healthz`)."""
+    response = jsonify(
+        {
+            "status": "ok",
+            "service": "chirify-openalgo",
+            "tz": "UTC",
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response, 200
+
+
+@chirify_probes_bp.route("/readyz", methods=["GET"])
+def pod_readyz():
+    """Unauthenticated Kubernetes readiness probe (`GET /readyz`).
+
+    Verifies database initialization readiness (`current_app.db_ready`),
+    loopback ZeroMQ binding (`ZMQ_HOST in {'127.0.0.1', 'localhost'}`), and
+    static egress IP verification when `CHIRIFY_REQUIRE_STATIC_EGRESS` is enabled.
+    """
+    reasons: list[str] = []
+
+    db_ready_event = getattr(current_app, "db_ready", None)
+    db_ready = True if db_ready_event is None else bool(db_ready_event.is_set())
+    if not db_ready:
+        reasons.append("db_not_ready")
+
+    zmq_host = _clean_env_val(os.getenv("ZMQ_HOST")) or "127.0.0.1"
+    if zmq_host not in ALLOWED_ZMQ_HOSTS:
+        reasons.append(f"invalid_zmq_host:{zmq_host}")
+
+    static_egress_verified, require_static_egress, _egress_file_present = (
+        _resolve_static_egress_state()
+    )
+    if require_static_egress and not static_egress_verified:
+        reasons.append("static_egress_unverified")
+
+    managed = is_managed_pod()
+    analyze_mode = _read_analyze_mode_safe(default_sandbox=managed)
+    kill_switch_engaged = chirify_live_gate.is_emergency_kill_switch_engaged()
+
+    ready = len(reasons) == 0
+    payload: dict[str, Any] = {
+        "status": "ready" if ready else "not_ready",
+        "service": "chirify-openalgo",
+        "tz": "UTC",
+        "db_ready": db_ready,
+        "zmq_host": zmq_host,
+        "analyze_mode": analyze_mode,
+        "kill_switch_engaged": kill_switch_engaged,
+        "static_egress_verified": static_egress_verified,
+    }
+    if reasons:
+        payload["reasons"] = reasons
+
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response, (200 if ready else 503)
+
+
+@chirify_probes_bp.route("/metrics", methods=["GET"])
+def pod_prometheus_metrics():
+    """Unauthenticated Prometheus OpenMetrics 0.0.4 scrape endpoint (`GET /metrics`)."""
+    managed = is_managed_pod()
+    analyze_mode_val = 1 if _read_analyze_mode_safe(default_sandbox=managed) else 0
+    kill_switch_val = 1 if chirify_live_gate.is_emergency_kill_switch_engaged() else 0
+
+    worm_summary = _resolve_worm_audit_summary()
+    worm_events_published = int(worm_summary.get("records_count", 0))
+
+    static_egress_verified, require_static_egress, egress_file_present = (
+        _resolve_static_egress_state()
+    )
+    egress_mismatch = (
+        1 if ((require_static_egress or egress_file_present) and not static_egress_verified) else 0
+    )
+    ib_gateway_ready = _resolve_ib_gateway_readiness_gauge()
+
+    lines = [
+        "# HELP chirify_pod_analyze_mode Whether OpenAlgo pod is operating in Analyzer/Sandbox mode (1=sandbox, 0=live).",
+        "# TYPE chirify_pod_analyze_mode gauge",
+        f"chirify_pod_analyze_mode {analyze_mode_val}",
+        "# HELP chirify_pod_kill_switch_engaged Whether the EU DORA Art. 30 / SEBI emergency kill-switch is engaged (1=engaged, 0=clear).",
+        "# TYPE chirify_pod_kill_switch_engaged gauge",
+        f"chirify_pod_kill_switch_engaged {kill_switch_val}",
+        "# HELP chirify_eventbus_worm_events_published_total Total hash-chained UTC WORM regulatory audit records written by this pod.",
+        "# TYPE chirify_eventbus_worm_events_published_total counter",
+        f"chirify_eventbus_worm_events_published_total {worm_events_published}",
+        "# HELP chirify_tenant_static_egress_ip_mismatch_total Non-zero when observed SNAT egress IPv4 diverges from allowed static VIPs.",
+        "# TYPE chirify_tenant_static_egress_ip_mismatch_total counter",
+        f"chirify_tenant_static_egress_ip_mismatch_total {egress_mismatch}",
+        "# HELP chirify_ib_gateway_api_readiness_probe_success Interactive Brokers Gateway active reqCurrentTime() API readiness (1=ok, 0=stalled).",
+        "# TYPE chirify_ib_gateway_api_readiness_probe_success gauge",
+        f"chirify_ib_gateway_api_readiness_probe_success {ib_gateway_ready}",
+        "",
+    ]
+    response = Response(
+        "\n".join(lines),
+        status=200,
+        content_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+

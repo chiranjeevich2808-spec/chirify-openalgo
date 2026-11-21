@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import threading
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -30,6 +31,7 @@ from blueprints.chirify_status import (
     DEFAULT_CHIRIFY_SOURCE_REPO_URL,
     EU_AI_ACT_ART50_DISCLOSURE,
     UPSTREAM_OPENALGO_URL,
+    chirify_probes_bp,
     chirify_status_bp,
 )
 from blueprints.internal_ops import internal_ops_bp
@@ -155,6 +157,8 @@ def _isolated_environment_and_stores(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "OPENROUTER_REGION",
         "CHIRIFY_DATA_RESIDENCY",
         "CHIRIFY_WORM_AUDIT_ENABLED",
+        "ZMQ_HOST",
+        "CHIRIFY_IB_GATEWAY_READY",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -239,10 +243,12 @@ def _build_app(*, csrf_enabled: bool = True) -> Flask:
     app.register_blueprint(internal_ops_bp)
     app.register_blueprint(chirify_sso_bp)
     app.register_blueprint(chirify_status_bp)
+    app.register_blueprint(chirify_probes_bp)
 
     csrf.exempt(internal_ops_bp)
     csrf.exempt(chirify_sso_bp)
     csrf.exempt(chirify_status_bp)
+    csrf.exempt(chirify_probes_bp)
     with app.app_context():
         csrf.exempt(app.view_functions["brlogin.broker_callback"])
         app.broker_auth_functions = load_broker_auth_functions()
@@ -872,4 +878,111 @@ def test_settings_analyze_mode_http_route_returns_403_when_kill_switch_engaged(
     assert r_live.status_code == 403
     assert r_live.get_json()["code"] == "emergency_kill_switch_engaged"
     assert settings_db.get_analyze_mode() is True
+
+
+# =============================================================================
+# 4. Unauthenticated Kubernetes Probes (`/healthz`, `/readyz`) & Prometheus `/metrics`
+# =============================================================================
+
+
+def test_k8s_healthz_readyz_and_prometheus_metrics_probes(
+    _isolated_environment_and_stores: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    egress_file = _isolated_environment_and_stores["egress_file"]
+    monkeypatch.setenv("CHIRIFY_MANAGED_POD", "true")
+    monkeypatch.setenv("ZMQ_HOST", "127.0.0.1")
+    settings_db.set_analyze_mode(True)
+
+    app = _build_app(csrf_enabled=True)
+    db_event = threading.Event()
+    app.db_ready = db_event
+    anon = app.test_client()
+
+    # 1. GET /healthz always returns 200 OK unauthenticated even before DB init completes
+    hz = anon.get("/healthz")
+    assert hz.status_code == 200
+    assert hz.headers.get("Cache-Control") == "no-store"
+    assert hz.get_json() == {
+        "status": "ok",
+        "service": "chirify-openalgo",
+        "tz": "UTC",
+    }
+
+    # 2. GET /readyz returns 503 while app.db_ready is unset
+    rz_booting = anon.get("/readyz")
+    assert rz_booting.status_code == 503
+    rz_boot_body = rz_booting.get_json()
+    assert rz_boot_body["status"] == "not_ready"
+    assert rz_boot_body["db_ready"] is False
+    assert "db_not_ready" in rz_boot_body["reasons"]
+
+    # Once DB finishes initializing, GET /readyz returns 200 OK with mode & kill-switch state
+    db_event.set()
+    rz_ok = anon.get("/readyz")
+    assert rz_ok.status_code == 200
+    assert rz_ok.headers.get("Cache-Control") == "no-store"
+    rz_ok_body = rz_ok.get_json()
+    assert rz_ok_body["status"] == "ready"
+    assert rz_ok_body["db_ready"] is True
+    assert rz_ok_body["zmq_host"] == "127.0.0.1"
+    assert rz_ok_body["analyze_mode"] is True
+    assert rz_ok_body["kill_switch_engaged"] is False
+
+    # Non-loopback ZMQ_HOST causes /readyz to fail closed with 503
+    monkeypatch.setenv("ZMQ_HOST", "0.0.0.0")
+    rz_bad_zmq = anon.get("/readyz")
+    assert rz_bad_zmq.status_code == 503
+    assert "invalid_zmq_host:0.0.0.0" in rz_bad_zmq.get_json()["reasons"]
+    monkeypatch.setenv("ZMQ_HOST", "127.0.0.1")
+
+    # Static egress mismatch causes /readyz -> 503 and egress mismatch gauge -> 1
+    monkeypatch.setenv("CHIRIFY_REQUIRE_STATIC_EGRESS", "true")
+    monkeypatch.setenv("EXPECTED_EGRESS_IPV4", "52.66.10.11")
+    egress_file.write_text(
+        json.dumps({"observed_ip": "198.51.100.99", "verified_at_epoch": time.time()}),
+        encoding="utf-8",
+    )
+    rz_bad_egress = anon.get("/readyz")
+    assert rz_bad_egress.status_code == 503
+    assert "static_egress_unverified" in rz_bad_egress.get_json()["reasons"]
+
+    m_drift = anon.get("/metrics")
+    assert m_drift.status_code == 200
+    assert "chirify_tenant_static_egress_ip_mismatch_total 1" in m_drift.get_data(as_text=True)
+
+    # Restore valid static egress IP, emit 2 WORM events, engage kill-switch, simulate IB stall
+    egress_file.write_text(
+        json.dumps({"observed_ip": "52.66.10.11", "verified_at_epoch": time.time()}),
+        encoding="utf-8",
+    )
+    assert anon.get("/readyz").status_code == 200
+
+    worm_audit_subscriber.emit_worm_audit_event("order_placed", {"symbol": "RELIANCE"})
+    worm_audit_subscriber.emit_worm_audit_event("order_filled", {"symbol": "RELIANCE"})
+    monkeypatch.setenv("CHIRIFY_EMERGENCY_KILL_SWITCH", "true")
+    monkeypatch.setenv("CHIRIFY_IB_GATEWAY_READY", "false")
+
+    # 3. GET /metrics exports Prometheus 0.0.4 exposition matching prometheus-slo-rules.yaml
+    m_resp = anon.get("/metrics")
+    assert m_resp.status_code == 200
+    assert m_resp.headers["Content-Type"].startswith(
+        "text/plain; version=0.0.4; charset=utf-8"
+    )
+    assert m_resp.headers.get("Cache-Control") == "no-store"
+    metrics_text = m_resp.get_data(as_text=True)
+    assert "chirify_pod_analyze_mode 1" in metrics_text
+    assert "chirify_pod_kill_switch_engaged 1" in metrics_text
+    assert "chirify_eventbus_worm_events_published_total 2" in metrics_text
+    assert "chirify_tenant_static_egress_ip_mismatch_total 0" in metrics_text
+    assert "chirify_ib_gateway_api_readiness_probe_success 0" in metrics_text
+
+    # 4. Verify app.py wires chirify_probes_bp, CSRF exemption & pre-login bypasses
+    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+    assert "chirify_probes_bp" in app_source
+    assert "csrf.exempt(chirify_probes_bp)" in app_source
+    assert '"/healthz"' in app_source
+    assert '"/readyz"' in app_source
+    assert '"/metrics"' in app_source
+
 

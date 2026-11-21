@@ -63,6 +63,10 @@ from blueprints.broker_credentials import (
 from blueprints.chart_test import chart_test_bp  # Standalone chart test page (dev/testing only)
 from blueprints.chartink import chartink_bp  # Import the chartink blueprint
 from blueprints.chirify_sso import chirify_sso_bp  # Single-use HS256 Chirify SSO launch ticket
+from blueprints.chirify_status import (  # AGPL-3.0 telemetry & K8s probes/metrics
+    chirify_probes_bp,
+    chirify_status_bp,
+)
 from blueprints.core import core_bp
 from blueprints.custom_indicators import custom_indicators_bp  # User chart indicators
 from blueprints.custom_straddle import custom_straddle_bp  # Import custom straddle blueprint
@@ -371,6 +375,8 @@ def create_app():
     csrf.exempt(chirify_sso_bp)
     app.register_blueprint(chirify_status_bp)  # Public AGPL-3.0 attribution & pod telemetry
     csrf.exempt(chirify_status_bp)
+    app.register_blueprint(chirify_probes_bp)  # Unauthenticated K8s /healthz, /readyz & /metrics
+    csrf.exempt(chirify_probes_bp)
 
     # Remote MCP (HTTP + OAuth) — opt-in via MCP_HTTP_ENABLED. Off by default.
     # Pre-flight refusal: must NEVER coexist with FLASK_DEBUG=True (debug-mode
@@ -525,8 +531,12 @@ def create_app():
         """Block requests until background database initialization completes."""
         from flask import request
 
-        # Static assets don't need DB
-        if request.path.startswith("/static/") or request.path.startswith("/assets/"):
+        # Static assets and K8s/Prometheus probes don't block on DB init
+        if (
+            request.path.startswith("/static/")
+            or request.path.startswith("/assets/")
+            or request.path in ("/healthz", "/readyz", "/metrics")
+        ):
             return
 
         # Wait up to 30s for DB init (typically ~3.5s)
@@ -543,7 +553,11 @@ def create_app():
         """
         from flask import request
 
-        if request.path.startswith("/static/") or request.path.startswith("/assets/"):
+        if (
+            request.path.startswith("/static/")
+            or request.path.startswith("/assets/")
+            or request.path in ("/healthz", "/readyz", "/metrics")
+        ):
             return
 
         from utils.session import end_session_if_signed_out
@@ -566,6 +580,9 @@ def create_app():
             or request.path
             in [
                 "/",
+                "/healthz",
+                "/readyz",
+                "/metrics",
                 "/auth/login",
                 "/auth/reset-password",
                 "/auth/csrf-token",
