@@ -72,6 +72,7 @@ from blueprints.gc_json import gc_json_bp
 from blueprints.gex import gex_bp  # Import the GEX blueprint
 from blueprints.health import health_bp  # Import the health monitoring blueprint
 from blueprints.historify import historify_bp  # Import the historify blueprint
+from blueprints.internal_ops import internal_ops_bp  # Import internal cluster ops blueprint
 from blueprints.ivchart import ivchart_bp  # Import the IV chart blueprint
 from blueprints.ivsmile import ivsmile_bp  # Import the IV Smile blueprint
 from blueprints.latency import latency_bp  # Import the latency blueprint
@@ -359,6 +360,8 @@ def create_app():
     app.register_blueprint(system_permissions_bp)  # Register System permissions blueprint
     app.register_blueprint(strategy_portfolio_bp)  # Register Strategy Portfolio blueprint
     app.register_blueprint(postback_bp)  # Register broker postback (order-update webhook) blueprint
+    app.register_blueprint(internal_ops_bp)  # Register internal cluster operations blueprint
+    csrf.exempt(internal_ops_bp)
 
     # Remote MCP (HTTP + OAuth) — opt-in via MCP_HTTP_ENABLED. Off by default.
     # Pre-flight refusal: must NEVER coexist with FLASK_DEBUG=True (debug-mode
@@ -549,6 +552,7 @@ def create_app():
         if (
             request.path.startswith("/static/")
             or request.path.startswith("/api/")
+            or request.path.startswith("/internal/")
             or request.path.startswith("/assets/")  # React frontend assets
             or request.path
             in [
@@ -655,7 +659,7 @@ def create_app():
         # white-screening the SPA with "Unexpected token '<'" instead of failing
         # cleanly. React routes without a Flask endpoint still fall through to
         # the shell, which is deliberate.
-        if path.startswith(("/api/", "/flow/api/", "/flow/webhook/")):
+        if path.startswith(("/api/", "/internal/", "/flow/api/", "/flow/webhook/")):
             return jsonify({"status": "error", "message": "Not found", "path": path}), 404
 
         if path.startswith(("/assets/", "/static/")) or "." in path.rsplit("/", 1)[-1]:

@@ -95,6 +95,44 @@ def ensure_db_directory():
         logger.info(f"Created database directory: {db_dir}")
 
 
+_duckdb_open_lock = threading.Lock()
+_duckdb_anchors: dict[str, Any] = {}
+
+
+def acquire_duckdb_cursor(db_path: str, max_retries: int = 3, retry_delay: float = 0.2):
+    """Return an isolated DuckDB cursor backed by a warm per-file anchor connection.
+
+    Keeping one anchor connection per resolved ``db_path`` prevents DuckDB's C++
+    ``DBInstanceCache`` from oscillating between refcount 0 and 1 across native
+    ``gthread`` workers, which otherwise triggers ``Unique file handle conflict``
+    and ``pandas_scan`` registration races under heavy concurrent load.
+    """
+    import time
+
+    resolved = os.path.abspath(db_path)
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            import duckdb
+
+            with _duckdb_open_lock:
+                anchor = _duckdb_anchors.get(resolved)
+                if anchor is None:
+                    anchor = duckdb.connect(resolved)
+                    _duckdb_anchors[resolved] = anchor
+                return anchor.cursor()
+        except Exception as e:
+            last_error = e
+            with _duckdb_open_lock:
+                _duckdb_anchors.pop(resolved, None)
+            if attempt < max_retries - 1:
+                logger.debug(f"DuckDB connection attempt {attempt + 1} failed, retrying: {e}")
+                time.sleep(retry_delay * (attempt + 1))
+            else:
+                logger.exception(f"Failed to connect to DuckDB after {max_retries} attempts: {e}")
+    raise last_error or Exception("Failed to connect to DuckDB")
+
+
 @contextmanager
 def get_connection(max_retries: int = 3, retry_delay: float = 0.5):
     """
@@ -111,30 +149,9 @@ def get_connection(max_retries: int = 3, retry_delay: float = 0.5):
         with get_connection() as conn:
             result = conn.execute("SELECT * FROM market_data").fetchdf()
     """
-    import time
-
     ensure_db_directory()
     db_path = get_db_path()
-    conn = None
-    last_error = None
-
-    for attempt in range(max_retries):
-        try:
-            import duckdb
-
-            conn = duckdb.connect(db_path)
-            break
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries - 1:
-                logger.debug(f"DuckDB connection attempt {attempt + 1} failed, retrying: {e}")
-                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-            else:
-                logger.exception(f"Failed to connect to DuckDB after {max_retries} attempts: {e}")
-
-    if conn is None:
-        raise last_error or Exception("Failed to connect to DuckDB")
-
+    conn = acquire_duckdb_cursor(db_path, max_retries=max_retries, retry_delay=retry_delay)
     try:
         yield conn
     finally:

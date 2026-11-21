@@ -2,6 +2,19 @@
 echo "[OpenAlgo] Starting up..."
 
 # ============================================
+# KUBERNETES EXTERNAL SECRETS OPERATOR (OPTIONAL)
+# ============================================
+# Source read-only ESO-mounted secrets when present before inspecting env vars
+ESO_ENV_FILE="${OPENALGO_ESO_ENV_FILE:-/run/secrets/openalgo/env}"
+if [ -f "$ESO_ENV_FILE" ] && [ -r "$ESO_ENV_FILE" ]; then
+    echo "[OpenAlgo] Loading External Secrets Operator environment from $ESO_ENV_FILE"
+    set -a
+    # shellcheck disable=SC1090
+    . "$ESO_ENV_FILE"
+    set +a
+fi
+
+# ============================================
 # RAILWAY/CLOUD ENVIRONMENT DETECTION & .env GENERATION
 # ============================================
 
@@ -501,6 +514,15 @@ if [ -f "/app/upgrade/migrate_all.py" ]; then
     fi
 else
     echo "[OpenAlgo] No migrations found, skipping..."
+fi
+
+# ============================================
+# STARTUP SECURITY INVARIANTS
+# ============================================
+echo "[OpenAlgo] Verifying startup security invariants..."
+if ! /app/.venv/bin/python -m utils.startup_invariants; then
+    echo "[OpenAlgo] Startup security invariant check failed; startup aborted." >&2
+    exit 1
 fi
 
 # ============================================

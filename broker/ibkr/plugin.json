@@ -1,0 +1,12 @@
+{
+    "Plugin Name": "ibkr",
+    "Plugin URI": "https://chirify.io",
+    "Description": "Interactive Brokers OpenAlgo Plugin — Global Multi-Asset (Unified OAuth 2.0 Web API & TWS Socket)",
+    "Version": "1.0.0",
+    "License": "BSD-2-Clause",
+    "Author": "Chirify Engineering",
+    "Author URI": "https://chirify.io",
+    "supported_exchanges": ["US_EQUITY", "US_OPTIONS", "EU_EQUITY", "FUTURES", "FOREX"],
+    "broker_type": "GLOBAL_multi",
+    "leverage_config": true
+}

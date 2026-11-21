@@ -30,7 +30,9 @@ RUN cd frontend && npm run build
 # --------------------------------------------------------------------------- #
 # ------------------------------ Production Stage --------------------------- #
 FROM python:3.12-slim-trixie AS production
-# 0 – set timezone to IST (Asia/Kolkata) & install runtime dependencies
+# 0 – set timezone to strict UTC & install runtime dependencies
+#     Strict UTC (TZ=UTC, /usr/share/zoneinfo/UTC) guarantees 5-year regulatory
+#     WORM timestamp integrity; exchange market calendars remain separate in code.
 #     chromium + fonts-liberation are required by Kaleido 1.x (plotly static
 #     image export) which drives a real headless Chromium via choreographer.
 #     Without these, /chart in the Telegram bot silently fails inside Docker.
@@ -42,7 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgfortran5 \
     chromium \
     fonts-liberation && \
-    ln -fs /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && \
+    ln -fs /usr/share/zoneinfo/UTC /etc/localtime && \
+    echo "UTC" > /etc/timezone && \
     dpkg-reconfigure -f noninteractive tzdata && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 # 1 – user & workdir.
@@ -62,7 +65,7 @@ COPY --chown=appuser:appuser . .
 # 3 - copy built frontend from frontend-builder
 COPY --from=frontend-builder --chown=appuser:appuser /app/frontend/dist /app/frontend/dist
 # 4 – create required directories with proper ownership and permissions
-#     Also create empty .env file with write permissions for Railway deployment
+#     Also create empty .env file with owner-only (0600) permissions for deployment
 #
 #     NOTE: chown /app itself (not just its contents). WORKDIR creates /app
 #     as root:root mode 755, and that ownership persists even after we
@@ -76,7 +79,7 @@ RUN mkdir -p /app/log /app/log/strategies /app/db /app/tmp /app/tmp/numba_cache 
     chown -R appuser:appuser /app/log /app/db /app/tmp /app/strategies /app/keys && \
     chmod -R 755 /app/strategies /app/log /app/tmp && \
     chmod 700 /app/keys && \
-    touch /app/.env && chown appuser:appuser /app/.env && chmod 666 /app/.env
+    touch /app/.env && chown appuser:appuser /app/.env && chmod 600 /app/.env
 # 5 – entrypoint script and fix line endings
 #     start.sh runs the web server launcher and its helpers when .env asks for
 #     gthread, so they lose any Windows line endings too (bash cannot run them).
@@ -90,8 +93,9 @@ RUN sed -i 's/\r$//' /app/start.sh /app/install/openalgo-gunicorn.sh \
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    TZ=Asia/Kolkata \
+    TZ=UTC \
     APP_MODE=standalone \
+    HISTORIFY_DATABASE_PATH=/app/db/historify.duckdb \
     TMPDIR=/app/tmp \
     NUMBA_CACHE_DIR=/app/tmp/numba_cache \
     LLVMLITE_TMPDIR=/app/tmp \
@@ -102,7 +106,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
     NUMEXPR_NUM_THREADS=2 \
     NUMBA_NUM_THREADS=2 \
     BROWSER_PATH=/usr/bin/chromium \
-    CHROME_BIN=/usr/bin/chromium
+    CHROME_BIN=/usr/bin/chromium \
+    CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu"
 # --------------------------------------------------------------------------- #
 USER appuser
 EXPOSE 5000
