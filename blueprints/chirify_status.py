@@ -224,6 +224,15 @@ def get_chirify_status():
     )
     openrouter_region = _resolve_openrouter_region()
     worm_summary = _resolve_worm_audit_summary()
+    zmq_host = _clean_env_val(os.getenv("ZMQ_HOST")) or "127.0.0.1"
+    zmq_loopback_locked = zmq_host in ALLOWED_ZMQ_HOSTS
+
+    try:
+        from utils.broker_keys import enabled_brokers
+
+        enabled_brokers_count = len(enabled_brokers())
+    except Exception:
+        enabled_brokers_count = 0
 
     payload: dict[str, Any] = {
         "status": "ok",
@@ -237,6 +246,8 @@ def get_chirify_status():
         "live_gate": live_gate_summary,
         "static_egress_verified": static_egress_verified,
         "openrouter_region": openrouter_region,
+        "zmq_loopback_locked": zmq_loopback_locked,
+        "enabled_brokers_count": enabled_brokers_count,
         "worm_audit": worm_summary,
         "authenticated": authenticated,
     }
