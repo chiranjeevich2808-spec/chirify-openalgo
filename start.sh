@@ -526,6 +526,19 @@ if ! /app/.venv/bin/python -m utils.startup_invariants; then
 fi
 
 # ============================================
+# CHIRIFY MANAGED POD HEADLESS BOOTSTRAP
+# ============================================
+case "$(printf '%s' "${CHIRIFY_MANAGED_POD:-}" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes|on)
+        echo "[OpenAlgo] Provisioning Chirify managed tenant pod..."
+        if ! /app/.venv/bin/python -m services.chirify_bootstrap_service; then
+            echo "[OpenAlgo] Chirify managed pod bootstrap failed; startup aborted." >&2
+            exit 1
+        fi
+        ;;
+esac
+
+# ============================================
 # WEBSOCKET PROXY SERVER
 # ============================================
 echo "[OpenAlgo] Starting WebSocket proxy server on port 8765..."

@@ -230,6 +230,10 @@ def resume_broker_session():
 @auth_bp.route("/check-setup", methods=["GET"])
 def check_setup_required():
     """Check if initial setup is required (no users exist)."""
+    from services.chirify_bootstrap_service import is_managed_pod
+
+    if is_managed_pod():
+        return jsonify({"status": "success", "needs_setup": False})
     needs_setup = find_user_by_username() is None
     return jsonify({"status": "success", "needs_setup": needs_setup})
 
@@ -1310,13 +1314,26 @@ def toggle_analyzer_mode_session():
 
     try:
         from services.analyzer_service import MODE_BUSY_MESSAGE, apply_analyze_mode
+        from services.chirify_live_gate import LiveGateBlockedError
         from utils.keyed_locks import LockBusy
 
         # Toggle the current mode and start or stop the execution engine and
         # square-off scheduler to match, as one step: the current mode is read
         # under the same lock, so two clicks cannot both toggle from one value.
         try:
-            new_mode = apply_analyze_mode(toggle=True)
+            new_mode = apply_analyze_mode(toggle=True, broker=session.get("broker"))
+        except LiveGateBlockedError as exc:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "code": exc.verdict.code,
+                        "message": exc.verdict.message,
+                        "reasons": list(exc.verdict.reasons),
+                    }
+                ),
+                exc.status_code,
+            )
         except LockBusy:
             return jsonify({"status": "error", "message": MODE_BUSY_MESSAGE}), 409
 

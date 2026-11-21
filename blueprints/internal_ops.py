@@ -6,6 +6,7 @@ Chirify Control Plane and Cilium static-egress failover controller:
 - ``GET  /internal/v1/health/egress``
 - ``POST /internal/v1/failover-reconcile``
 - ``POST /internal/v1/historify/export-parquet``
+- ``POST /internal/v1/entitlements/sync``
 
 Security controls:
 1. Restricted strictly to loopback, RFC1918 private, link-local, ULA, or
@@ -17,6 +18,7 @@ Security controls:
 
 from __future__ import annotations
 
+import base64
 import hmac
 import ipaddress
 import json
@@ -26,9 +28,16 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+from services import chirify_live_gate
 from services.qlib_snapshot_service import export_historify_parquet
 from services.strategy_module import ack_reconciliation
-from subscribers.worm_audit_subscriber import emit_worm_audit_event
+from subscribers.worm_audit_subscriber import (
+    REDACTED_VALUE,
+    WormAuditRecord,
+    WormAuditWriter,
+    emit_worm_audit_event,
+)
+from utils import real_threading
 from utils.logging import get_logger
 from utils.startup_invariants import DEFAULT_EGRESS_STATE_PATH, is_truthy
 
@@ -141,6 +150,10 @@ def _authenticate_internal_ops():
         )
 
     return None
+
+
+_require_internal_ops_auth = _authenticate_internal_ops
+_ENTITLEMENT_SYNC_LOCK = real_threading.Lock()
 
 
 @internal_ops_bp.route("/health/egress", methods=["GET"])
@@ -343,3 +356,157 @@ def export_parquet_endpoint():
         ),
         200,
     )
+
+
+def _decode_token_metadata(token: str) -> tuple[str | None, str | None, str | None]:
+    """Extract ``(jti, payload_typ, purpose)`` from an already-verified compact token."""
+    try:
+        parts = token.strip().split(".")
+        payload_b64 = parts[1] if len(parts) == 3 else parts[0]
+        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        if not isinstance(payload, dict):
+            return None, None, None
+        raw_jti = payload.get("jti")
+        raw_typ = payload.get("typ")
+        raw_purpose = payload.get("purpose")
+        return (
+            str(raw_jti).strip() if raw_jti is not None and str(raw_jti).strip() else None,
+            str(raw_typ).strip() if raw_typ is not None else None,
+            str(raw_purpose).strip() if raw_purpose is not None else None,
+        )
+    except Exception:
+        return None, None, None
+
+
+def _emit_internal_worm_safe(event_type: str, payload: dict[str, Any]) -> WormAuditRecord:
+    """Append WORM audit event, falling back to local LOG_DIR if /app/log is read-only in dev/tests."""
+    try:
+        return emit_worm_audit_event(event_type, payload)
+    except OSError:
+        fallback_dir = Path((os.getenv("LOG_DIR") or "log").strip() or "log")
+        return WormAuditWriter(fallback_dir / "worm_audit.jsonl").append(event_type, payload)
+
+
+@internal_ops_bp.route("/entitlements/sync", methods=["POST"])
+def sync_entitlements():
+    """Verify and hot-apply a signed Chirify Entitlement JWT into the running tenant pod."""
+    auth_error = _require_internal_ops_auth()
+    if auth_error is not None:
+        return auth_error
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "code": "invalid_payload",
+                    "message": "Request body must be a JSON object.",
+                }
+            ),
+            400,
+        )
+
+    token = str(body.get("entitlement_token") or "").strip()
+    if not token:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "code": "missing_entitlement_token",
+                    "message": "entitlement_token is required.",
+                }
+            ),
+            400,
+        )
+
+    secret = (os.getenv("CHIRIFY_ENTITLEMENT_SECRET") or "").strip()
+    try:
+        claims = chirify_live_gate.verify_entitlement_token(token, secret)
+    except chirify_live_gate.EntitlementVerificationError as exc:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "code": "entitlement_invalid",
+                    "message": str(exc),
+                }
+            ),
+            403,
+        )
+
+    token_jti, payload_typ, payload_purpose = _decode_token_metadata(token)
+    if payload_typ == "CHIRIFY-SSO" or payload_purpose == "pod_sso":
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "code": "wrong_token_type",
+                    "message": "SSO launch tickets cannot be synced as entitlement tokens.",
+                }
+            ),
+            400,
+        )
+
+    expected_tenant_id = (os.getenv("CHIRIFY_TENANT_ID") or "").strip()
+    if expected_tenant_id:
+        if not claims.tenant_id or not hmac.compare_digest(
+            claims.tenant_id.encode("utf-8"),
+            expected_tenant_id.encode("utf-8"),
+        ):
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "code": "tenant_mismatch",
+                        "message": (
+                            f"Entitlement token tenant_id {claims.tenant_id!r} does not match "
+                            f"pod tenant_id {expected_tenant_id!r}."
+                        ),
+                    }
+                ),
+                403,
+            )
+
+    enforce_requested = body.get("enforce_live_gate")
+    should_enable_gate = enforce_requested is True or (
+        isinstance(enforce_requested, str) and is_truthy(enforce_requested)
+    )
+
+    with _ENTITLEMENT_SYNC_LOCK:
+        os.environ["CHIRIFY_ENTITLEMENT_TOKEN"] = token
+        if should_enable_gate:
+            os.environ["CHIRIFY_ENFORCE_LIVE_GATE"] = "true"
+
+    verdict = chirify_live_gate.evaluate_live_gate(claims)
+    worm_record = _emit_internal_worm_safe(
+        "chirify_entitlement_synced",
+        {
+            "jti": token_jti,
+            "tenant_id": claims.tenant_id,
+            "allowed": verdict.allowed,
+            "code": verdict.code,
+            "cohort": claims.cohort,
+            "exchange_algo_id": claims.exchange_algo_id,
+            "static_ip_verified": claims.static_ip_verified,
+            "enforce_live_gate": chirify_live_gate.is_live_gate_enforced(),
+            "entitlement_token": REDACTED_VALUE,
+        },
+    )
+
+    return (
+        jsonify(
+            {
+                "status": "ok",
+                "tenant_id": claims.tenant_id,
+                "live_gate": verdict.as_dict(),
+                "worm_audit": {
+                    "seq_no": worm_record.seq_no,
+                    "record_hash": worm_record.record_hash,
+                },
+            }
+        ),
+        200,
+    )
+

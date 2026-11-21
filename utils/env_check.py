@@ -1359,11 +1359,36 @@ def load_and_check_env_variables() -> None:
     # This fixes "failed to map segment from shared object" on hardened Linux servers
     configure_llvmlite_paths()
 
+    project_root = os.path.join(os.path.dirname(__file__), "..")
+    sample_env_path = os.path.join(project_root, ".sample.env")
+
+    # Kubernetes External Secrets Operator (CHIRIFY_MANAGED_POD=true) path:
+    # Secrets (APP_KEY, API_KEY_PEPPER, FERNET_SALT) are projected directly into
+    # os.environ (or /run/secrets/openalgo/env) with no plaintext /app/.env file.
+    if os.getenv("CHIRIFY_MANAGED_POD", "").strip().lower() in ("true", "1", "yes", "on"):
+        eso_file = os.getenv("OPENALGO_ESO_ENV_FILE", "/run/secrets/openalgo/env")
+        if os.path.isfile(eso_file):
+            load_dotenv(eso_file, override=False)
+        app_key = os.getenv("APP_KEY", "").strip()
+        pepper = os.getenv("API_KEY_PEPPER", "").strip()
+        fernet_salt = os.getenv("FERNET_SALT", "").strip()
+        if not app_key or app_key in COMPROMISED_APP_KEYS:
+            print("\nError: Managed pod missing or compromised APP_KEY in environment.")
+            sys.exit(1)
+        if not pepper or len(pepper) < 32 or pepper in COMPROMISED_PEPPERS:
+            print("\nError: Managed pod missing, short, or compromised API_KEY_PEPPER in environment.")
+            sys.exit(1)
+        if not fernet_salt or fernet_salt.startswith("OPENALGO_PLACEHOLDER_"):
+            print("\nError: Managed pod missing or placeholder FERNET_SALT in environment.")
+            sys.exit(1)
+        if os.path.isfile(sample_env_path):
+            load_dotenv(sample_env_path, override=False)
+        return
+
     # A new install with no .env gets one, made from .sample.env with fresh
     # security keys, before anything reads it.
-    project_root = os.path.join(os.path.dirname(__file__), "..")
     create_env_from_sample(
-        os.path.join(project_root, ".env"), os.path.join(project_root, ".sample.env")
+        os.path.join(project_root, ".env"), sample_env_path
     )
 
     # Check version compatibility

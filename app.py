@@ -62,6 +62,7 @@ from blueprints.broker_credentials import (
 )
 from blueprints.chart_test import chart_test_bp  # Standalone chart test page (dev/testing only)
 from blueprints.chartink import chartink_bp  # Import the chartink blueprint
+from blueprints.chirify_sso import chirify_sso_bp  # Single-use HS256 Chirify SSO launch ticket
 from blueprints.core import core_bp
 from blueprints.custom_indicators import custom_indicators_bp  # User chart indicators
 from blueprints.custom_straddle import custom_straddle_bp  # Import custom straddle blueprint
@@ -184,6 +185,10 @@ def create_app():
     from subscribers import register_all as register_event_subscribers
 
     register_event_subscribers()
+
+    from services.chirify_bootstrap_service import install_managed_pod_setup_guard
+
+    install_managed_pod_setup_guard(app)
 
     # Initialize CSRF protection
     csrf = CSRFProtect(app)
@@ -362,6 +367,8 @@ def create_app():
     app.register_blueprint(postback_bp)  # Register broker postback (order-update webhook) blueprint
     app.register_blueprint(internal_ops_bp)  # Register internal cluster operations blueprint
     csrf.exempt(internal_ops_bp)
+    app.register_blueprint(chirify_sso_bp)  # Register single-use Chirify SSO handoff blueprint
+    csrf.exempt(chirify_sso_bp)
 
     # Remote MCP (HTTP + OAuth) — opt-in via MCP_HTTP_ENABLED. Off by default.
     # Pre-flight refusal: must NEVER coexist with FLASK_DEBUG=True (debug-mode
@@ -569,6 +576,7 @@ def create_app():
                 "/login",  # React login page
             ]
             or request.path.startswith("/auth/broker/")  # OAuth callbacks
+            or request.path.startswith("/auth/chirify/")  # Chirify Control Plane SSO tickets
             or request.path.startswith("/_reload-ws")
         ):  # WebSocket reload endpoint
             return

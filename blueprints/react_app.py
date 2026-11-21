@@ -120,6 +120,11 @@ def react_login():
 # Setup route (initial admin setup)
 @react_bp.route("/setup")
 def react_setup():
+    from services.chirify_bootstrap_service import managed_pod_setup_blocked_response
+
+    blocked = managed_pod_setup_blocked_response()
+    if blocked is not None:
+        return blocked
     return serve_react_app()
 
 

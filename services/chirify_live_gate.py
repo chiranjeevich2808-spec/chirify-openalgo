@@ -166,10 +166,13 @@ def _b64url_decode(segment: str) -> bytes:
 
 
 def is_live_gate_enforced(env: Mapping[str, str] | None = None) -> bool:
-    """Return True iff ``CHIRIFY_ENFORCE_LIVE_GATE`` is enabled."""
+    """Return True iff ``CHIRIFY_ENFORCE_LIVE_GATE`` is enabled (or managed pod default)."""
     source = env if env is not None else os.environ
     raw = str(source.get("CHIRIFY_ENFORCE_LIVE_GATE") or "").strip().lower()
-    return raw in TRUTHY_VALUES
+    if raw:
+        return raw in TRUTHY_VALUES
+    managed = str(source.get("CHIRIFY_MANAGED_POD") or "").strip().lower()
+    return managed in {"true", "1", "yes", "on"}
 
 
 def sign_entitlement_token(claims: EntitlementClaims | Mapping[str, Any], secret: str) -> str:
