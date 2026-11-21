@@ -46,6 +46,15 @@ logger = get_logger(__name__)
 
 internal_ops_bp = Blueprint("internal_ops_bp", __name__, url_prefix="/internal/v1")
 
+
+@internal_ops_bp.after_request
+def _apply_internal_ops_security_headers(response):
+    """Attach non-cacheable nosniff headers to all internal cluster ops responses."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 _ALLOWED_IPV4_NETS: tuple[ipaddress.IPv4Network, ...] = (
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -83,11 +92,15 @@ def is_allowed_internal_ip(remote_addr: str | None) -> bool:
 
 
 def _extract_provided_token() -> str:
-    """Extract internal ops token from ``Authorization: Bearer`` or ``X-Chirify-Internal-Token``."""
+    """Extract internal ops token from ``Authorization: Bearer`` or Chirify internal headers."""
     auth_header = (request.headers.get("Authorization") or "").strip()
     if auth_header.lower().startswith("bearer "):
         return auth_header[7:].strip()
-    return (request.headers.get("X-Chirify-Internal-Token") or "").strip()
+    return (
+        request.headers.get("X-Chirify-Internal-Token")
+        or request.headers.get("X-Chirify-Ops-Token")
+        or ""
+    ).strip()
 
 
 @internal_ops_bp.before_request
@@ -285,9 +298,13 @@ def failover_reconcile():
     worm_record = emit_worm_audit_event(
         "cilium_egress_failover_reconciled",
         {
-            "old_egress_ip": body.get("old_egress_ip"),
-            "new_egress_ip": body.get("new_egress_ip"),
-            "reason": body.get("reason", "cilium_egress_gateway_failover"),
+            "old_egress_ip": body.get("old_egress_ip") or body.get("previous_egress_ip"),
+            "new_egress_ip": body.get("new_egress_ip") or body.get("active_egress_ip"),
+            "reason": (
+                body.get("reason")
+                or body.get("failover_reason")
+                or "cilium_egress_gateway_failover"
+            ),
             "metrics": metrics,
         },
     )
@@ -523,19 +540,23 @@ def toggle_compliance_kill_switch():
         return auth_error
 
     body = request.get_json(silent=True)
-    if not isinstance(body, dict) or "engaged" not in body:
+    if not isinstance(body, dict) or (
+        "engaged" not in body and "kill_switch_engaged" not in body
+    ):
         return (
             jsonify(
                 {
                     "status": "error",
                     "code": "invalid_payload",
-                    "message": "Request body must be a JSON object containing boolean 'engaged'.",
+                    "message": "Request body must be a JSON object containing boolean 'engaged' or 'kill_switch_engaged'.",
                 }
             ),
             400,
         )
 
-    raw_engaged = body.get("engaged")
+    raw_engaged = (
+        body["engaged"] if "engaged" in body else body.get("kill_switch_engaged")
+    )
     if isinstance(raw_engaged, bool):
         engaged = raw_engaged
     elif isinstance(raw_engaged, str) and raw_engaged.strip().lower() in {"true", "false"}:

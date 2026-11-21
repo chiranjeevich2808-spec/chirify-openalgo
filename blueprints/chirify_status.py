@@ -270,9 +270,9 @@ def _resolve_ib_gateway_readiness_gauge() -> int:
     return 1
 
 
-@chirify_probes_bp.route("/healthz", methods=["GET"])
+@chirify_probes_bp.route("/healthz", methods=["GET", "HEAD"])
 def pod_healthz():
-    """Unauthenticated Kubernetes liveness probe (`GET /healthz`)."""
+    """Unauthenticated Kubernetes liveness probe (`GET`/`HEAD /healthz`)."""
     response = jsonify(
         {
             "status": "ok",
@@ -284,7 +284,7 @@ def pod_healthz():
     return response, 200
 
 
-@chirify_probes_bp.route("/readyz", methods=["GET"])
+@chirify_probes_bp.route("/readyz", methods=["GET", "HEAD"])
 def pod_readyz():
     """Unauthenticated Kubernetes readiness probe (`GET /readyz`).
 

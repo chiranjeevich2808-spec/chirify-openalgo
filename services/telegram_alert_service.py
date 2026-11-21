@@ -8,6 +8,7 @@ under Gunicorn + eventlet deployments.
 """
 
 import json
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -29,8 +30,23 @@ logger = get_logger(__name__)
 # Thread pool for non-blocking dispatch
 alert_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="telegram_alert")
 
+
+def _build_telegram_http_client() -> httpx.Client:
+    try:
+        return httpx.Client(timeout=30.0)
+    except httpx.InvalidURL:
+        proxy_url = (
+            os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+            or None
+        )
+        return httpx.Client(timeout=30.0, proxy=proxy_url, trust_env=False)
+
+
 # Synchronous HTTP client for Telegram Bot API calls (thread-safe)
-_http_client = httpx.Client(timeout=30.0)
+_http_client = _build_telegram_http_client()
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 

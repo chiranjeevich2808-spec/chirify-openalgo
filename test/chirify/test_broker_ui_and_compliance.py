@@ -1027,3 +1027,62 @@ def test_security_headers_nosniff_and_no_store_on_probes_metrics_status_and_sso(
     assert rz_503.status_code == 503
     assert rz_503.headers.get("X-Content-Type-Options") == "nosniff"
     assert rz_503.headers.get("Cache-Control") == "no-store"
+
+
+def test_prr_iteration2_head_probes_and_cross_plane_contract_aliases(
+    _isolated_environment_and_stores: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Verify HEAD /healthz|/readyz, Control Plane kill_switch_engaged & failover_reconcile aliases, and nosniff/no-store on internal_ops."""
+    monkeypatch.setenv("CHIRIFY_MANAGED_POD", "true")
+    monkeypatch.setenv("CHIRIFY_TENANT_ID", "ten_prr_iter2")
+    monkeypatch.setenv("CHIRIFY_INTERNAL_OPS_TOKEN", "ops-iter2-secret-token-2026")
+    monkeypatch.setenv("ZMQ_HOST", "127.0.0.1")
+
+    app = _build_app(csrf_enabled=True)
+    db_event = threading.Event()
+    db_event.set()
+    app.db_ready = db_event
+    client = app.test_client()
+
+    # HEAD probes must succeed with security headers for ALB/K8s compatibility
+    for probe_path in ("/healthz", "/readyz"):
+        h_resp = client.head(probe_path)
+        assert h_resp.status_code == 200, probe_path
+        assert h_resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert h_resp.headers.get("Cache-Control") == "no-store"
+
+    # Control Plane DORA kill-switch alias (`kill_switch_engaged` + X-Chirify-Ops-Token)
+    ks_resp = client.post(
+        "/internal/v1/compliance/kill-switch",
+        json={"kill_switch_engaged": True, "reason": "Control Plane DORA push"},
+        headers={"X-Chirify-Ops-Token": "ops-iter2-secret-token-2026"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert ks_resp.status_code == 200, ks_resp.get_data(as_text=True)
+    assert ks_resp.headers.get("Cache-Control") == "no-store"
+    assert ks_resp.headers.get("X-Content-Type-Options") == "nosniff"
+    ks_body = ks_resp.get_json()
+    assert ks_body["engaged"] is True and ks_body["analyze_mode"] is True
+
+    # Control Plane / Operator failover-reconcile alias (`previous_egress_ip`/`active_egress_ip`)
+    fr_resp = client.post(
+        "/internal/v1/failover-reconcile",
+        json={
+            "previous_egress_ip": "52.66.10.11",
+            "active_egress_ip": "52.66.20.11",
+            "failover_reason": "cilium_primary_drain",
+        },
+        headers={"Authorization": "Bearer ops-iter2-secret-token-2026"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert fr_resp.status_code == 200, fr_resp.get_data(as_text=True)
+    assert fr_resp.headers.get("Cache-Control") == "no-store"
+    assert fr_resp.headers.get("X-Content-Type-Options") == "nosniff"
+    worm_path = Path(os.environ["CHIRIFY_WORM_LOG_PATH"])
+    assert worm_audit_subscriber.verify_worm_chain(worm_path).valid is True
+    lines = [json.loads(ln) for ln in worm_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    failover_evts = [r for r in lines if r["event_type"] == "cilium_egress_failover_reconciled"]
+    assert failover_evts and failover_evts[-1]["payload"]["old_egress_ip"] == "52.66.10.11"
+    assert failover_evts[-1]["payload"]["new_egress_ip"] == "52.66.20.11"
+
