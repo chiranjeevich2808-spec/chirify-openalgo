@@ -62,9 +62,18 @@ ORDER_MUTATING_TOOLS: tuple[str, ...] = (
     "close_all_positions",
 )
 
-# Includes ``cancel_all_orders`` (plural) used in services/agent/tools/orders.py
+# Includes ``cancel_all_orders`` (plural) and all 11 destructive/order-mutating
+# MCP tools registered in utils/mcp_tool_registry.py while keeping canonical
+# ORDER_MUTATING_TOOLS at length 7 for contract stability.
 ALL_ORDER_MUTATING_TOOL_NAMES: frozenset[str] = frozenset(ORDER_MUTATING_TOOLS) | frozenset(
-    {"cancel_all_orders"}
+    {
+        "cancel_all_orders",
+        "place_basket_order",
+        "place_split_order",
+        "place_options_order",
+        "place_options_multi_order",
+        "analyzer_toggle",
+    }
 )
 
 REMOTE_MCP_TRANSPORTS: frozenset[str] = frozenset(

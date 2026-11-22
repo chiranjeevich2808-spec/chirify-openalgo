@@ -7,7 +7,10 @@ from typing import Any
 
 import httpx
 import pandas as pd
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ModuleNotFoundError:
+    from mcp.server.mcpserver import MCPServer as FastMCP
 from mcp.types import ToolAnnotations
 from openalgo import api, ta
 
@@ -62,7 +65,18 @@ def init_for_http(api_key_value: str, host_value: str) -> None:
     global api_key, host, client
     api_key = api_key_value
     host = host_value
-    client = api(api_key=api_key_value, host=host_value)
+    try:
+        client = api(api_key=api_key_value, host=host_value)
+    except httpx.InvalidURL:
+        # httpx fails parsing unbracketed IPv6 entries (e.g. "::1") in NO_PROXY.
+        # Loopback/in-process OpenAlgo SDK calls never need external HTTP proxies.
+        saved = {k: os.environ.pop(k, None) for k in ("NO_PROXY", "no_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")}
+        try:
+            client = api(api_key=api_key_value, host=host_value)
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
 
 # Default strategy name for all order-related calls originating from the MCP server.
 # Surfaced in OpenAlgo logs and analyzer views so MCP-driven trades are identifiable.

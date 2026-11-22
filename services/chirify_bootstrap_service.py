@@ -230,14 +230,53 @@ def bootstrap_managed_tenant(env: Mapping[str, str] | None = None) -> dict[str, 
             # First-boot safety invariant: managed pods ALWAYS start in Analyzer (Sandbox) Mode
             settings_db.set_analyze_mode(True)
 
-    # Ensure an initial OpenAlgo API key exists for Sandbox/Analyzer dashboard queries
-    if not auth_db.get_api_key(user.username):
+    # Ensure an initial OpenAlgo API key exists for Sandbox/Analyzer dashboard queries.
+    # Honor optional CHIRIFY_POD_API_KEY without ever logging or returning plaintext.
+    configured_api_key = _clean_env_val(source.get("CHIRIFY_POD_API_KEY"))
+    if configured_api_key:
+        existing_plain = None
+        try:
+            existing_plain = auth_db.get_api_key_for_tradingview(user.username)
+        except Exception:
+            existing_plain = None
+        if not auth_db.get_api_key(user.username) or existing_plain != configured_api_key:
+            auth_db.upsert_api_key(user.username, configured_api_key)
+    elif not auth_db.get_api_key(user.username):
         auth_db.upsert_api_key(user.username, secrets.token_hex(32))
 
     del bootstrap_password
     del configured_password
+    del configured_api_key
 
     current_analyze_mode = bool(settings_db.get_analyze_mode())
+
+    # Provision Analyzer Sandbox runtime idempotently when in Managed Pod Analyzer Mode.
+    # Guard strictly against unit-test fixtures that isolate only (user_db, auth_db,
+    # settings_db, analyzer_db) and NEVER emit a second WORM record here.
+    sandbox_flag = _clean_env_val(source.get("CHIRIFY_SANDBOX_BOOTSTRAP")).lower()
+    sandbox_enabled = sandbox_flag not in {"false", "0", "no", "off"}
+    if current_analyze_mode and sandbox_enabled:
+        from database import symbol as symbol_db
+        from services.chirify_sandbox_bootstrap import bootstrap_sandbox_environment
+
+        engines_match = str(symbol_db.engine.url) == str(auth_db.engine.url)
+        has_explicit_historify = bool(
+            _clean_env_val(source.get("HISTORIFY_DATABASE_PATH"))
+            or _clean_env_val(source.get("HISTORIFY_DATABASE_URL"))
+            or _clean_env_val(source.get("CHIRIFY_SANDBOX_SEED_HISTORIFY")).lower()
+            in MANAGED_POD_TRUTHY
+        )
+        has_explicit_sandbox_db = bool(_clean_env_val(source.get("SANDBOX_DATABASE_URL")))
+        bootstrap_sandbox_environment(
+            username=user.username,
+            tenant_id=tenant_id,
+            env=source,
+            seed_historify=has_explicit_historify,
+            seed_symtokens=engines_match,
+            seed_funds=has_explicit_sandbox_db,
+            auth_engine=auth_db.engine,
+        )
+
     worm_seq_no: int | None = None
     if not already_existed:
         worm_seq_no = _emit_bootstrap_worm_event(

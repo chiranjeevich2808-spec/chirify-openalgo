@@ -174,19 +174,30 @@ def get_expiry_datetime(
     )
 
 
-def check_opengreeks_availability():
-    """Check if opengreeks library is available"""
+def _load_black76_backend():
+    """Return ``opengreeks.black76`` when installed, else pure-Python ``utils.black_scholes``."""
     try:
-        from opengreeks.black76 import implied_volatility as black_iv  # noqa: F401
+        from opengreeks import black76
 
-        return True, None, None
+        return black76
     except ImportError:
-        logger.error("opengreeks library not installed. Install with: pip install opengreeks")
+        from utils import black_scholes
+
+        return black_scholes
+
+
+def check_opengreeks_availability():
+    """Check if Black-76 Greeks backend (opengreeks or built-in pure-Python fallback) is available."""
+    try:
+        _load_black76_backend()
+        return True, None, None
+    except Exception as exc:
+        logger.error(f"Option Greeks backend unavailable: {exc}")
         return (
             False,
             {
                 "status": "error",
-                "message": "Option Greeks calculation requires opengreeks library. Install with: pip install opengreeks",
+                "message": "Option Greeks calculation backend is unavailable.",
             },
             500,
         )
@@ -464,9 +475,10 @@ def calculate_chain_greeks(
 
     try:
         import numpy as np
-        from opengreeks import black76
-    except ImportError:
-        logger.error("opengreeks not installed; option chain Greeks unavailable")
+
+        black76 = _load_black76_backend()
+    except Exception as exc:
+        logger.error(f"Black-76 backend unavailable; option chain Greeks unavailable: {exc}")
         return list(empty), list(empty)
 
     if forward_price <= 0 or time_to_expiry_years <= 0:
@@ -595,9 +607,9 @@ def calculate_greeks(
         Tuple of (success, response_dict, status_code)
     """
     try:
-        # opengreeks is lazy-loaded to keep startup snappy (Rust core, NumPy-only deps).
+        # Prefer opengreeks if installed; seamlessly fall back to built-in analytical Black-76.
         try:
-            from opengreeks import black76
+            black76 = _load_black76_backend()
 
             black_delta = black76.delta
             black_gamma = black76.gamma
@@ -605,13 +617,13 @@ def calculate_greeks(
             black_rho = black76.rho
             black_theta = black76.theta
             black_vega = black76.vega
-        except ImportError:
-            logger.error("opengreeks library not installed.")
+        except Exception as exc:
+            logger.error(f"Option Greeks backend unavailable: {exc}")
             return (
                 False,
                 {
                     "status": "error",
-                    "message": "Option Greeks calculation requires opengreeks library. Install with: pip install opengreeks",
+                    "message": "Option Greeks calculation backend is unavailable.",
                 },
                 500,
             )

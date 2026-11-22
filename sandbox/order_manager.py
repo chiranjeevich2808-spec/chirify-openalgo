@@ -156,8 +156,10 @@ class OrderManager:
                     )
 
             # Validate MIS orders - reject if after square-off time but before market open
-            # Exception: Allow orders that reduce/close existing positions
-            if product == "MIS":
+            # Exception: Allow orders that reduce/close existing positions, or when opt-in 24/7 Sandbox is enabled
+            from database.sandbox_db import is_24x7_sandbox_enabled
+
+            if product == "MIS" and not is_24x7_sandbox_enabled():
                 from datetime import time as dt_time
 
                 from sandbox.squareoff_manager import SquareOffManager

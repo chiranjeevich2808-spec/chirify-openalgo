@@ -60,6 +60,10 @@ _SENSITIVE_KEY_NORMS: frozenset[str] = frozenset(
         "bearertoken",
         "authtoken",
         "feedtoken",
+        "webhooktoken",
+        "confirmationtoken",
+        "approvaltoken",
+        "entitlementtoken",
     }
 )
 

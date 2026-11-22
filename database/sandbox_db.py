@@ -694,3 +694,26 @@ def get_all_configs():
     except Exception as e:
         logger.exception(f"Error fetching all configs: {e}")
         return {}
+
+
+_SANDBOX_24X7_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def is_24x7_sandbox_enabled() -> bool:
+    """Return True when opt-in 24/7 Analyzer Sandbox trading is active.
+
+    Enabled via ``CHIRIFY_SANDBOX_24X7=true`` environment variable OR
+    ``SandboxConfig`` key ``sandbox_24x7="true"``. Defaults to ``False`` so
+    upstream NSE market-hours tests and standard deployments are unaffected.
+    """
+    env_raw = os.getenv("CHIRIFY_SANDBOX_24X7", "").strip().lower()
+    if env_raw in _SANDBOX_24X7_TRUTHY:
+        return True
+    if env_raw in ("0", "false", "no", "off"):
+        return False
+    try:
+        cfg_val = get_config("sandbox_24x7", "false")
+        return str(cfg_val or "").strip().lower() in _SANDBOX_24X7_TRUTHY
+    except Exception:
+        return False
+

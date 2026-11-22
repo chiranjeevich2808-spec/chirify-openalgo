@@ -1144,6 +1144,18 @@ def shutdown_database_sessions(exception=None):
 logger.debug("Starting WebSocket proxy")
 start_websocket_proxy(app)
 
+# Pre-warm SharedZmqPublisher in Analyzer/Sandbox mode so the first order fill
+# publishes over loopback ZMQ without slow-joiner latency.
+try:
+    from database.settings_db import get_analyze_mode as _get_analyze_mode_zmq
+
+    if _get_analyze_mode_zmq():
+        from websocket_proxy.connection_manager import SharedZmqPublisher
+
+        SharedZmqPublisher.instance().connect()
+except Exception as _zmq_warm_err:
+    logger.debug(f"SharedZmqPublisher pre-warm skipped: {_zmq_warm_err}")
+
 # Under the gthread worker, end Socket.IO sessions as soon as gunicorn starts
 # its graceful stop: each open session holds a worker thread, and a thread
 # still held when the window closes turns the stop into a kill. A no-op under
@@ -1310,4 +1322,11 @@ if __name__ == "__main__":
 
         install_signal_handlers()
 
-    socketio.run(app, host=host_ip, port=port, debug=debug, reloader_options=reloader_options)
+    socketio.run(
+        app,
+        host=host_ip,
+        port=port,
+        debug=debug,
+        reloader_options=reloader_options,
+        allow_unsafe_werkzeug=True,
+    )

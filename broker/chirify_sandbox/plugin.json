@@ -1,0 +1,22 @@
+{
+  "Plugin Name": "chirify_sandbox",
+  "Plugin URI": "https://chirify.io",
+  "Description": "Chirify Historify-Backed Analyzer Sandbox Execution & Market Data Provider",
+  "Version": "1.0.0",
+  "License": "AGPL-3.0",
+  "Author": "Chirify Engineering",
+  "supported_exchanges": [
+    "NSE",
+    "NFO",
+    "NSE_INDEX",
+    "BSE",
+    "BFO",
+    "US_EQUITY",
+    "US_OPTIONS",
+    "EU_EQUITY",
+    "CRYPTO",
+    "CRYPTO_SWAP"
+  ],
+  "broker_type": "GLOBAL_multi",
+  "leverage_config": true
+}

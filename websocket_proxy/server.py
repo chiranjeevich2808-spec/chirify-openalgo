@@ -852,7 +852,7 @@ class WebSocketProxy:
             valid_brokers_list = os.getenv("VALID_BROKERS", "").split(",")
             valid_brokers_list = [b.strip() for b in valid_brokers_list if b.strip()]
 
-            if broker_name not in valid_brokers_list:
+            if broker_name != "chirify_sandbox" and broker_name not in valid_brokers_list:
                 logger.error(
                     f"Broker '{broker_name}' is not in VALID_BROKERS list: {valid_brokers_list}"
                 )
@@ -2069,6 +2069,11 @@ class WebSocketProxy:
                     ("BSE", "INDEX"),
                     ("MCX", "INDEX"),
                     ("GLOBAL", "INDEX"),
+                    ("US", "EQUITY"),
+                    ("US", "OPTIONS"),
+                    ("EU", "EQUITY"),
+                    ("CRYPTO", "SWAP"),
+                    ("CRYPTO", "OPTIONS"),
                 )
                 if len(remaining) >= 2 and (remaining[0], remaining[1]) in _MULTI_SEGMENT_EXCHANGE_PREFIXES:
                     exchange = f"{remaining[0]}_{remaining[1]}"

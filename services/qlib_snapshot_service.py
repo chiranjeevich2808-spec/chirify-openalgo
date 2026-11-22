@@ -80,17 +80,12 @@ class ParquetSnapshotResult:
 
 
 def _resolve_duckdb_path(db_path: str | Path | None = None) -> str:
-    """Resolve the active Historify DuckDB path."""
+    """Resolve the active Historify DuckDB path consistently with ``historify_db.get_db_path()``."""
     if db_path is not None:
-        return str(Path(db_path).resolve())
-    # Respect runtime monkeypatching of historify_db.HISTORIFY_DB_PATH or env override
-    if historify_db.HISTORIFY_DB_PATH != "db/historify.duckdb":
-        return historify_db.get_db_path()
-    env_override = os.getenv("HISTORIFY_DATABASE_PATH", "").strip()
-    if env_override:
-        if os.path.isabs(env_override):
-            return env_override
-        return str((Path(historify_db.__file__).resolve().parents[1] / env_override).resolve())
+        raw = str(db_path).strip()
+        if raw.lower().startswith("duckdb:///"):
+            raw = raw[len("duckdb:///") :]
+        return str(Path(raw).resolve())
     return historify_db.get_db_path()
 
 
@@ -240,6 +235,8 @@ def export_historify_parquet(
         and UTC timestamp bounds.
     """
     target_path = Path(output_path).resolve()
+    if target_path.exists() and target_path.is_dir():
+        raise ValueError(f"output_path must be a file path, not a directory: {target_path}")
     target_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = target_path.parent / f".{target_path.name}.tmp.{uuid.uuid4().hex}.parquet"
 
@@ -253,8 +250,12 @@ def export_historify_parquet(
     if interval and interval.strip():
         where_clauses.append(f"interval = {_sql_quote(interval, 'interval')}")
     if start_timestamp is not None:
+        if isinstance(start_timestamp, bool):
+            raise ValueError("start_timestamp must be an integer epoch, not a boolean.")
         where_clauses.append(f"timestamp >= {int(start_timestamp)}")
     if end_timestamp is not None:
+        if isinstance(end_timestamp, bool):
+            raise ValueError("end_timestamp must be an integer epoch, not a boolean.")
         where_clauses.append(f"timestamp <= {int(end_timestamp)}")
 
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
@@ -277,6 +278,24 @@ def export_historify_parquet(
         with historify_db._historify_write_lock:
             conn = _connect_duckdb_with_retry(resolved_db)
             try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS market_data (
+                        symbol VARCHAR NOT NULL,
+                        exchange VARCHAR NOT NULL,
+                        interval VARCHAR NOT NULL,
+                        timestamp BIGINT NOT NULL,
+                        open DOUBLE NOT NULL,
+                        high DOUBLE NOT NULL,
+                        low DOUBLE NOT NULL,
+                        close DOUBLE NOT NULL,
+                        volume BIGINT NOT NULL,
+                        oi BIGINT DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT current_timestamp,
+                        PRIMARY KEY (symbol, exchange, interval, timestamp)
+                    )
+                    """
+                )
                 conn.execute("BEGIN TRANSACTION")
                 try:
                     row = conn.execute(stats_sql).fetchone()
