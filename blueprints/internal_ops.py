@@ -688,7 +688,7 @@ def _resolve_pod_api_key(username: str | None = None, *, provision_if_missing: b
     if resolved_user:
         try:
             key = auth_db.get_api_key_for_tradingview(resolved_user)
-            if key:
+            if key and auth_db.verify_api_key(str(key)):
                 return str(key)
         except Exception:
             pass
@@ -702,7 +702,7 @@ def _resolve_pod_api_key(username: str | None = None, *, provision_if_missing: b
                 pass
     try:
         fallback = auth_db.get_first_available_api_key()
-        if fallback:
+        if fallback and auth_db.verify_api_key(str(fallback)):
             return str(fallback)
     except Exception:
         pass

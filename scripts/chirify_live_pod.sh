@@ -13,7 +13,15 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="${CHIRIFY_RUNTIME_DIR:-/tmp/chirify_openalgo_runtime}"
-PY="${CHIRIFY_PYTHON:-/home/antigravity/.venvs/chirify-openalgo/bin/python}"
+if [ -n "${CHIRIFY_PYTHON:-}" ]; then
+    PY="$CHIRIFY_PYTHON"
+elif [ -x "$REPO_DIR/.venv/bin/python" ]; then
+    PY="$REPO_DIR/.venv/bin/python"
+elif [ -x "/home/antigravity/.venvs/chirify-openalgo/bin/python" ]; then
+    PY="/home/antigravity/.venvs/chirify-openalgo/bin/python"
+else
+    PY="$(command -v python3)"
+fi
 PIDFILE="$RUNTIME/pod.pid"
 LOGDIR="$RUNTIME/logs"
 SECRETS="$RUNTIME/secrets.env"
@@ -65,7 +73,7 @@ export WEBSOCKET_PROXY_MODE="${WEBSOCKET_PROXY_MODE:-thread}"
 export ZMQ_HOST="127.0.0.1" ZMQ_PORT="5555"
 export WS_PING_INTERVAL=20 WS_PING_TIMEOUT=20
 export LOG_DIR="$RUNTIME/logs" LOG_TO_FILE=False LOG_COLORS=False
-export CORS_ALLOWED_ORIGINS="http://127.0.0.1:5000,http://127.0.0.1:5173"
+export CORS_ALLOWED_ORIGINS="http://127.0.0.1:5000,http://127.0.0.1:5173,http://localhost:5173"
 export VALID_BROKERS="${VALID_BROKERS:-fivepaisa,fivepaisaxts,aliceblue,angel,arrow,compositedge,dhan,dhan_sandbox,definedge,deltaexchange,firstock,flattrade,fyers,groww,hdfcsecurities,hdfcsky,ibulls,iifl,iiflcapital,indmoney,jainamxts,kotak,motilal,mstock,nubra,nuvama,paytm,pocketful,rmoney,rupeezy,sahi,samco,shoonya,tradejini,tradesmart,upstox,wisdom,zebu,zerodha,alpaca,ibkr,ccxt}"
 export MCP_HTTP_ENABLED="${MCP_HTTP_ENABLED:-False}"
 export PYTHONUNBUFFERED=1 PYTHONPATH="$REPO_DIR"
@@ -77,11 +85,13 @@ case "$cmd" in
         cd "$REPO_DIR"
         "$PY" -m utils.startup_invariants
         "$PY" -m services.chirify_bootstrap_service
+        "$PY" -m services.chirify_sandbox_bootstrap
         ;;
     foreground)
         cd "$REPO_DIR"
         "$PY" -m utils.startup_invariants
         "$PY" -m services.chirify_bootstrap_service
+        "$PY" -m services.chirify_sandbox_bootstrap
         exec "$PY" app.py
         ;;
     start)
@@ -90,7 +100,11 @@ case "$cmd" in
             exit 0
         fi
         cd "$REPO_DIR"
-        setsid nohup "$0" foreground > "$LOGDIR/pod.out.log" 2>&1 < /dev/null &
+        if command -v setsid >/dev/null 2>&1; then
+            setsid nohup "$0" foreground > "$LOGDIR/pod.out.log" 2>&1 < /dev/null &
+        else
+            nohup "$0" foreground > "$LOGDIR/pod.out.log" 2>&1 < /dev/null &
+        fi
         echo $! > "$PIDFILE"
         echo "pod starting (pid $(cat "$PIDFILE")); logs: $LOGDIR/pod.out.log"
         ;;
