@@ -821,11 +821,18 @@ class WebSocketProxy:
         """
         try:
             from database.auth_db import Auth
+            from utils.db_sessions import session_cleanup
 
-            auth_obj = Auth.query.filter_by(name=user_id).first()
+            with session_cleanup():
+                auth_obj = Auth.query.filter_by(name=user_id).first()
+                active_broker = (
+                    auth_obj.broker
+                    if (auth_obj and not auth_obj.is_revoked and auth_obj.broker)
+                    else None
+                )
 
-            if auth_obj and not auth_obj.is_revoked and auth_obj.broker:
-                broker_name = auth_obj.broker
+            if active_broker:
+                broker_name = active_broker
                 logger.info(f"Found broker '{broker_name}' for user {user_id} from database")
             else:
                 # Fallback to environment variable

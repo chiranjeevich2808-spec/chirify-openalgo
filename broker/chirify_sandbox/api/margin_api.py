@@ -48,7 +48,7 @@ def calculate_margin_api(
             raw_price = float(quote.get("ltp") or 0.0)
 
         price_dec = Decimal(str(round(raw_price, 4)))
-        req_margin = fm.calculate_margin_required(
+        req_res = fm.calculate_margin_required(
             symbol=symbol,
             exchange=exchange,
             product=product,
@@ -56,7 +56,8 @@ def calculate_margin_api(
             price=price_dec,
             action=action,
         )
-        req_dec = Decimal(str(req_margin))
+        req_margin = req_res[0] if isinstance(req_res, tuple) else req_res
+        req_dec = Decimal(str(req_margin or 0))
         total_margin += req_dec
         if exchange in {"NFO", "BFO", "MCX", "CDS", "BCD", "NCDEX", "CRYPTO_SWAP"}:
             span_part = (req_dec * Decimal("0.72")).quantize(Decimal("0.01"))

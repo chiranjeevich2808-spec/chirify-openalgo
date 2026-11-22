@@ -34,8 +34,8 @@ def get_order_book(auth: str = "") -> dict[str, Any]:
 
 
 def get_trade_book(auth: str = "") -> dict[str, Any]:
-    om = OrderManager(_resolve_user_id())
-    _, resp, _ = om.get_tradebook()
+    pm = PositionManager(_resolve_user_id())
+    _, resp, _ = pm.get_tradebook()
     return resp
 
 
@@ -63,7 +63,8 @@ def place_smartorder_api(data: dict[str, Any], auth: str = "") -> tuple[SimpleNa
 
 def modify_order(data: dict[str, Any], auth: str = "") -> tuple[dict[str, Any], int]:
     om = OrderManager(_resolve_user_id())
-    _, resp, code = om.modify_order(data)
+    orderid = str((data or {}).get("orderid") or "")
+    _, resp, code = om.modify_order(orderid, data)
     return resp, code
 
 
@@ -75,11 +76,24 @@ def cancel_order(orderid: str, auth: str = "") -> tuple[dict[str, Any], int]:
 
 def cancel_all_orders_api(data: dict[str, Any], auth: str = "") -> tuple[list[str], list[str]]:
     om = OrderManager(_resolve_user_id())
-    _, resp, _ = om.cancel_all_orders(strategy=data.get("strategy") if isinstance(data, dict) else None)
-    return list(resp.get("canceled_orders", [])), list(resp.get("failed_cancellations", []))
+    _, ob_resp, _ = om.get_orderbook()
+    orders = (ob_resp.get("data") or {}).get("orders") or []
+    canceled: list[str] = []
+    failed: list[str] = []
+    for order in orders:
+        if order.get("order_status") in ("open", "pending", "trigger pending", "trigger_pending"):
+            oid = str(order.get("orderid") or "")
+            if not oid:
+                continue
+            ok, _, _ = om.cancel_order(oid)
+            if ok:
+                canceled.append(oid)
+            else:
+                failed.append(oid)
+    return canceled, failed
 
 
 def close_all_positions(current_api_key: str = "", auth: str = "") -> tuple[dict[str, Any], int]:
     pm = PositionManager(_resolve_user_id())
-    _, resp, code = pm.close_position()
+    _, resp, code = pm.close_all_positions()
     return resp, code

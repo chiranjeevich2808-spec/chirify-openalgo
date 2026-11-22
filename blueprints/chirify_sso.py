@@ -39,7 +39,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Response, jsonify, redirect, request, session
+from flask import Blueprint, Response, jsonify, make_response, redirect, request, session
 
 from blueprints.auth import _try_resume_broker_session
 from database.auth_db import log_login_attempt
@@ -441,6 +441,9 @@ def sso_handoff():
             ),
             403,
         )
+
+    if request.method == "HEAD":
+        return _apply_sso_no_store_headers(make_response("", 200))
 
     ticket = _extract_request_ticket()
     secret = resolve_sso_secret()

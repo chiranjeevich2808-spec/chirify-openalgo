@@ -551,10 +551,17 @@ def _synthesize_intraday_from_daily(
 ) -> pd.DataFrame:
     """Deterministically disaggregate recent daily OHLCV into intraday bars via Brownian bridge."""
     parsed = historify_db.parse_interval(interval)
-    if parsed is None or parsed[1] not in ("m", "h"):
+    if parsed is None:
         return daily_df
-    unit_value, unit_type = parsed
-    bar_minutes = unit_value * (60 if unit_type == "h" else 1)
+    if isinstance(parsed, dict):
+        if parsed.get("type") != "intraday":
+            return daily_df
+        bar_minutes = int(parsed.get("minutes") or 0)
+    else:
+        if parsed[1] not in ("m", "h"):
+            return daily_df
+        unit_value, unit_type = parsed
+        bar_minutes = int(unit_value) * (60 if unit_type == "h" else 1)
     if bar_minutes <= 0:
         return daily_df
 

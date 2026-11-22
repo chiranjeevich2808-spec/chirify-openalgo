@@ -31,22 +31,22 @@ Security controls:
 from __future__ import annotations
 
 import base64
-from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
 import hmac
 import ipaddress
 import json
 import math
 import os
-from pathlib import Path
 import re
 import secrets
 import tempfile
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, has_app_context, jsonify, request
 import httpx
 import pandas as pd
+from flask import Blueprint, current_app, has_app_context, jsonify, request
 
 from services import chirify_live_gate
 from services.qlib_snapshot_service import export_historify_parquet
@@ -468,6 +468,17 @@ def sync_entitlements():
     secret = (os.getenv("CHIRIFY_ENTITLEMENT_SECRET") or "").strip()
     try:
         claims = chirify_live_gate.verify_entitlement_token(token, secret)
+    except chirify_live_gate.EntitlementWrongTokenTypeError as exc:
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "code": "wrong_token_type",
+                    "message": str(exc),
+                }
+            ),
+            400,
+        )
     except chirify_live_gate.EntitlementVerificationError as exc:
         return (
             jsonify(
@@ -967,6 +978,22 @@ def historify_candles():
         start_timestamp=start_ts,
         end_timestamp=end_ts,
     )
+    if (df is None or df.empty) and interval.upper() not in ("D", "1D", "W", "M"):
+        daily_df = historify_db.get_ohlcv(
+            symbol=symbol,
+            exchange=exchange,
+            interval="D",
+            start_timestamp=start_ts,
+            end_timestamp=end_ts,
+        )
+        if daily_df is not None and not daily_df.empty:
+            from broker.chirify_sandbox.api.data import _synthesize_intraday_from_daily
+
+            df = _synthesize_intraday_from_daily(daily_df, symbol, exchange, interval)
+            if start_ts is not None and not df.empty:
+                df = df[df["timestamp"] >= start_ts]
+            if end_ts is not None and not df.empty:
+                df = df[df["timestamp"] <= end_ts]
 
     candles: list[dict[str, Any]] = []
     if df is not None and not df.empty:
@@ -1802,8 +1829,9 @@ def internal_options_analytics():
         expiry_sym, expiry_db = pair
     else:
         try:
+            exact_opt_prefix_re = re.compile(rf"^{re.escape(underlying)}\d{{2}}[A-Z]{{3}}\d{{2}}")
             exp_rows = (
-                symbol_db.db_session.query(SymToken.expiry)
+                symbol_db.db_session.query(SymToken.symbol, SymToken.expiry)
                 .filter(
                     SymToken.exchange == options_exchange,
                     SymToken.symbol.like(f"{underlying}%"),
@@ -1814,10 +1842,17 @@ def internal_options_analytics():
                 .distinct()
                 .all()
             )
+            seen_expiries: set[str] = set()
             parsed_expiries: list[tuple[datetime, str, str]] = []
-            for (raw_e,) in exp_rows:
-                pair = _normalize_expiry_pair(str(raw_e))
-                dt_obj = _parse_expiry_date_obj(str(raw_e))
+            for raw_sym, raw_e in exp_rows:
+                if not exact_opt_prefix_re.match(str(raw_sym or "").upper()):
+                    continue
+                exp_str = str(raw_e)
+                if exp_str in seen_expiries:
+                    continue
+                seen_expiries.add(exp_str)
+                pair = _normalize_expiry_pair(exp_str)
+                dt_obj = _parse_expiry_date_obj(exp_str)
                 if pair and dt_obj:
                     parsed_expiries.append((dt_obj, pair[0], pair[1]))
             parsed_expiries.sort(key=lambda item: item[0])
@@ -1960,7 +1995,12 @@ def internal_options_analytics():
             if oi <= 0:
                 oi = int(q.get("oi") or 0)
 
-        iv_val = float(oc_leg.get("iv") or 0.0) if isinstance(oc_leg, dict) else 0.0
+        raw_iv = (
+            (oc_leg.get("implied_volatility") if oc_leg.get("implied_volatility") is not None else oc_leg.get("iv"))
+            if isinstance(oc_leg, dict)
+            else None
+        )
+        iv_val = float(raw_iv or 0.0)
         delta_val = float(oc_leg.get("delta") or 0.0) if isinstance(oc_leg, dict) else 0.0
         gamma_val = float(oc_leg.get("gamma") or 0.0) if isinstance(oc_leg, dict) else 0.0
         theta_val = float(oc_leg.get("theta") or 0.0) if isinstance(oc_leg, dict) else 0.0
@@ -2021,8 +2061,9 @@ def internal_options_analytics():
             }
         )
 
-        call_gex = round(ce["gamma"] * ce["oi"] * lot_size, 2)
-        put_gex = round(pe["gamma"] * pe["oi"] * lot_size, 2)
+        # Note: NFO/broker OI is already denominated in contract units (lots * lot_size)
+        call_gex = round(ce["gamma"] * ce["oi"], 2)
+        put_gex = round(pe["gamma"] * pe["oi"], 2)
         gex_profile.append(
             {
                 "strike": float(strike),
@@ -2052,6 +2093,7 @@ def internal_options_analytics():
                 "exchange": options_exchange,
                 "spot_price": round(float(spot_price), 2),
                 "expiry": expiry_sym,
+                "lot_size": lot_size,
                 "pcr": pcr,
                 "max_pain": max_pain,
                 "chain": chain,

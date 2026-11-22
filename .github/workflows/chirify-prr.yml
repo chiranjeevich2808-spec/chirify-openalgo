@@ -33,6 +33,7 @@ jobs:
             subscribers/worm_audit_subscriber.py \
             blueprints/internal_ops.py \
             blueprints/chirify_*.py \
+            broker/chirify_sandbox \
             broker/alpaca \
             broker/ibkr \
             broker/ccxt \

@@ -1088,7 +1088,21 @@ def _reconcile_once(user_id, auto_fix):
         )
         return False, Decimal("0"), "GTT margin unavailable; reconciliation skipped"
 
-    total_position_margin += total_gtt_margin
+    # Resting open/pending/trigger-pending orders also hold margin_blocked; erasing
+    # it during fill reconciliation would make resting orders fail cancel with HTTP 409.
+    from database.sandbox_db import SandboxOrders
+
+    resting_orders = (
+        SandboxOrders.query.filter(
+            SandboxOrders.user_id == user_id,
+            SandboxOrders.order_status.in_(["open", "pending", "trigger pending", "trigger_pending"]),
+        )
+        .populate_existing()
+        .all()
+    )
+    total_order_margin = sum(Decimal(str(ord_row.margin_blocked or 0)) for ord_row in resting_orders)
+
+    total_position_margin += total_gtt_margin + total_order_margin
 
     # used_margin as read above, fresh from the database: a copy read earlier
     # would decide the discrepancy on a balance that has since moved.
@@ -1183,20 +1197,32 @@ def reconcile_all_users_margin():
 
 def validate_margin_consistency(user_id):
     """
-    Validate that used_margin equals sum of position margins.
+    Validate that used_margin equals sum of position, GTT, and resting order margins.
     Call this after position updates to detect issues early.
 
     Returns:
         tuple: (is_consistent: bool, discrepancy: Decimal)
     """
     try:
-        # Calculate total margin blocked across all open positions
+        from database.sandbox_db import SandboxGTT, SandboxOrders
+
+        # Calculate total margin blocked across all open positions + resting orders + GTTs
         positions = SandboxPositions.query.filter_by(user_id=user_id).all()
         total_position_margin = sum(
             Decimal(str(pos.margin_blocked or 0))
             for pos in positions
             if pos.quantity != 0  # Only count open positions
         )
+        resting_orders = SandboxOrders.query.filter(
+            SandboxOrders.user_id == user_id,
+            SandboxOrders.order_status.in_(["open", "pending", "trigger pending", "trigger_pending"]),
+        ).all()
+        total_order_margin = sum(Decimal(str(o.margin_blocked or 0)) for o in resting_orders)
+        total_gtt_margin = sum(
+            Decimal(str(gtt.margin_blocked or 0))
+            for gtt in SandboxGTT.query.filter_by(user_id=user_id, gtt_status="active").all()
+        )
+        expected_used = total_position_margin + total_order_margin + total_gtt_margin
 
         # Get current used_margin from funds
         funds = SandboxFunds.query.filter_by(user_id=user_id).first()
@@ -1204,7 +1230,7 @@ def validate_margin_consistency(user_id):
             return True, Decimal("0")  # No funds = no discrepancy to report
 
         current_used_margin = Decimal(str(funds.used_margin or 0))
-        discrepancy = current_used_margin - total_position_margin
+        discrepancy = current_used_margin - expected_used
 
         if discrepancy != 0:
             logger.warning(

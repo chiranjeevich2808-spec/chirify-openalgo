@@ -43,6 +43,10 @@ class EntitlementVerificationError(PermissionError):
     """Raised when a Chirify Entitlement token is missing, malformed, forged, or expired."""
 
 
+class EntitlementWrongTokenTypeError(EntitlementVerificationError):
+    """Raised when a validly signed non-entitlement token (e.g. CHIRIFY-SSO) is presented."""
+
+
 @dataclass(frozen=True, slots=True)
 class EntitlementClaims:
     """Structured entitlement claims signed by the Chirify Control Plane."""
@@ -228,12 +232,14 @@ def verify_entitlement_token(
     parts = token.strip().split(".")
     key_bytes = secret.encode("utf-8")
 
+    header_typ = ""
     try:
         if len(parts) == 3:
             header_b64, payload_b64, sig_part = parts
             header = json.loads(_b64url_decode(header_b64).decode("utf-8"))
             if not isinstance(header, Mapping) or header.get("alg") != "HS256":
                 raise EntitlementVerificationError("Unsupported entitlement token algorithm.")
+            header_typ = str(header.get("typ") or "").strip().upper()
             signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
             expected_sig = hmac.new(key_bytes, signing_input, hashlib.sha256).digest()
             provided_sig = _b64url_decode(sig_part)
@@ -264,6 +270,12 @@ def verify_entitlement_token(
 
     if not isinstance(payload, Mapping):
         raise EntitlementVerificationError("Entitlement token payload must be a JSON object.")
+    if (
+        header_typ == "CHIRIFY-SSO"
+        or str(payload.get("typ") or "").strip().upper() == "CHIRIFY-SSO"
+        or str(payload.get("purpose") or "").strip().lower() == "pod_sso"
+    ):
+        raise EntitlementWrongTokenTypeError("SSO launch tickets cannot be used as entitlement tokens.")
 
     claims = EntitlementClaims.from_mapping(payload)
     if claims.expires_at is not None:
@@ -442,6 +454,19 @@ def check_live_mode_transition(
                 message=f"Live mode blocked [entitlement_invalid]: {reason}",
                 reasons=(reason,),
             )
+
+    expected_tid = str(effective_env.get("CHIRIFY_TENANT_ID") or "").strip()
+    if expected_tid and resolved_claims.tenant_id and resolved_claims.tenant_id != expected_tid:
+        reason = (
+            f"Entitlement token tenant_id {resolved_claims.tenant_id!r} does not match "
+            f"pod CHIRIFY_TENANT_ID {expected_tid!r}."
+        )
+        return LiveGateVerdict(
+            allowed=False,
+            code="entitlement_tenant_mismatch",
+            message=f"Live mode blocked [entitlement_tenant_mismatch]: {reason}",
+            reasons=(reason,),
+        )
 
     if broker and not resolved_claims.broker_name:
         inferred_type = _resolve_broker_type(broker, resolved_claims.broker_type)

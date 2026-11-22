@@ -231,12 +231,12 @@ def fetch_yahoo_ohlcv(
     n = min(len(timestamps), len(opens), len(highs), len(lows), len(closes))
     rows: list[dict[str, Any]] = []
     for i in range(n):
-        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+        o, h, low_val, c = opens[i], highs[i], lows[i], closes[i]
         ts = timestamps[i]
-        if ts is None or o is None or h is None or l is None or c is None:
+        if ts is None or o is None or h is None or low_val is None or c is None:
             continue
         try:
-            o_f, h_f, l_f, c_f = float(o), float(h), float(l), float(c)
+            o_f, h_f, l_f, c_f = float(o), float(h), float(low_val), float(c)
             ts_i = int(ts)
         except (TypeError, ValueError):
             continue
@@ -1052,7 +1052,8 @@ def bootstrap_sandbox_environment(
     Note: Intentionally emits ZERO WORM audit events so ``bootstrap_managed_tenant()``
     preserves its exact single-WORM-record contract.
     """
-    from database import auth_db, symbol as symbol_db, user_db
+    from database import auth_db, user_db
+    from database import symbol as symbol_db
 
     source = env if env is not None else os.environ
 

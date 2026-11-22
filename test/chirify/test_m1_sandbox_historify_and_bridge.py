@@ -5,13 +5,12 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from flask import Flask
 import pytest
+from flask import Flask
 
 from blueprints.internal_ops import internal_ops_bp
 from utils import broker_keys
 from utils.black_scholes import delta, gamma, implied_volatility, price, theta, vega
-
 
 INTERNAL_TOKEN = "test-m1-internal-ops-token-2026"
 
@@ -30,7 +29,9 @@ def isolated_m1_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     from sqlalchemy import create_engine
     from sqlalchemy.orm import scoped_session, sessionmaker
-    from database import historify_db, symbol as symbol_db
+
+    from database import historify_db
+    from database import symbol as symbol_db
     from services.chirify_sandbox_bootstrap import (
         seed_historify_market_data,
         seed_sandbox_symtokens,

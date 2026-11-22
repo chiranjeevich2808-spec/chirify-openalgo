@@ -569,7 +569,7 @@ def sandbox_cancel_all_orders(
         open_orders = [
             order
             for order in orders
-            if order.get("order_status") in ["open", "pending", "trigger_pending"]
+            if order.get("order_status") in ["open", "pending", "trigger pending", "trigger_pending"]
         ]
 
         if not open_orders:

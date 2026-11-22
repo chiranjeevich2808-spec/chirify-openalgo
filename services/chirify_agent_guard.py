@@ -305,6 +305,14 @@ class Gate2ConfirmationManager:
             expires_at_epoch=expires,
         )
         with self._lock:
+            expired_keys = [k for k, v in self._pending.items() if now > v.expires_at_epoch]
+            for k in expired_keys:
+                self._pending.pop(k, None)
+            while len(self._pending) >= 2048:
+                oldest_key = next(iter(self._pending))
+                self._pending.pop(oldest_key, None)
+            if len(self._consumed_ids) > 8192:
+                self._consumed_ids.clear()
             self._pending[conf_id] = pending
         return pending
 

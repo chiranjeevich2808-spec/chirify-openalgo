@@ -125,8 +125,19 @@ def ensure_db_directory():
         logger.info(f"Created database directory: {db_dir}")
 
 
-_duckdb_open_lock = threading.Lock()
+_duckdb_open_lock = real_threading.Lock()
 _duckdb_anchors: dict[str, Any] = {}
+_native_duckdb_connect: Any = None
+
+
+def _get_native_duckdb_connect():
+    global _native_duckdb_connect
+    with _duckdb_open_lock:
+        if _native_duckdb_connect is None:
+            import duckdb as _duckdb_mod
+
+            _native_duckdb_connect = _duckdb_mod.connect
+        return _native_duckdb_connect
 
 
 def close_duckdb_anchor(db_path: str | None = None) -> None:
@@ -190,15 +201,22 @@ def acquire_duckdb_cursor(db_path: str, max_retries: int = 3, retry_delay: float
     ``DBInstanceCache`` from oscillating between refcount 0 and 1 across native
     ``gthread`` workers, which otherwise triggers ``Unique file handle conflict``
     and ``pandas_scan`` registration races under heavy concurrent load.
+    When ``duckdb.connect`` is replaced (e.g. connection-retry tests), bypasses
+    the cached anchor so custom connect hooks and backoff loops execute directly.
     """
     import time
 
+    native_connect = _get_native_duckdb_connect()
     resolved = os.path.abspath(_normalize_duckdb_path(db_path))
     last_error = None
     quarantined = False
     for attempt in range(max_retries):
         try:
             import duckdb
+
+            if duckdb.connect is not native_connect:
+                close_duckdb_anchor(resolved)
+                return duckdb.connect(resolved)
 
             with _duckdb_open_lock:
                 anchor = _duckdb_anchors.get(resolved)
@@ -216,13 +234,7 @@ def acquire_duckdb_cursor(db_path: str, max_retries: int = 3, retry_delay: float
                 return anchor.cursor()
         except Exception as e:
             last_error = e
-            with _duckdb_open_lock:
-                old = _duckdb_anchors.pop(resolved, None)
-                if old is not None:
-                    try:
-                        old.close()
-                    except Exception:
-                        pass
+            close_duckdb_anchor(resolved)
             if attempt < max_retries - 1:
                 logger.debug(f"DuckDB connection attempt {attempt + 1} failed, retrying: {e}")
                 time.sleep(retry_delay * (attempt + 1))

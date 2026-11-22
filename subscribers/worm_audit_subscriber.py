@@ -33,6 +33,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows compatibility
+    fcntl = None  # type: ignore[assignment]
+
 from utils import real_threading
 from utils.logging import get_logger
 
@@ -64,8 +69,47 @@ _SENSITIVE_KEY_NORMS: frozenset[str] = frozenset(
         "confirmationtoken",
         "approvaltoken",
         "entitlementtoken",
+        "ssoticket",
+        "launchticket",
     }
 )
+_SENSITIVE_KEY_SUFFIXES: tuple[str, ...] = (
+    "apikey",
+    "secret",
+    "token",
+    "password",
+    "passwd",
+    "ticket",
+    "cookie",
+)
+_NON_SENSITIVE_METADATA_NORMS: frozenset[str] = frozenset(
+    {
+        "tokencount",
+        "prompttokens",
+        "completiontokens",
+        "totaltokens",
+        "maxtokens",
+        "tokenbudget",
+        "hasentitlementtoken",
+        "hasapikey",
+        "hastoken",
+    }
+)
+
+_PATH_LOCKS_GUARD = real_threading.Lock()
+_PATH_LOCKS: dict[Path, real_threading.RLock] = {}
+
+
+def _get_path_lock(path: Path) -> real_threading.RLock:
+    resolved = path.resolve()
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(resolved)
+        if lock is None:
+            if len(_PATH_LOCKS) >= 512:
+                _PATH_LOCKS.clear()
+            lock = real_threading.RLock()
+            _PATH_LOCKS[resolved] = lock
+        return lock
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,13 +153,23 @@ def _normalize_key_name(key: str) -> str:
     return key.strip().lower().replace("_", "").replace("-", "")
 
 
+def _is_sensitive_key(norm_key: str, raw_value: Any) -> bool:
+    if norm_key in _SENSITIVE_KEY_NORMS:
+        return True
+    if norm_key in _NON_SENSITIVE_METADATA_NORMS:
+        return False
+    if isinstance(raw_value, bool | int | float) or raw_value is None:
+        return False
+    return norm_key.endswith(_SENSITIVE_KEY_SUFFIXES)
+
+
 def redact_sensitive_fields(value: Any) -> Any:
     """Recursively redact credentials and secrets from arbitrary structures."""
     if isinstance(value, Mapping):
         sanitized: dict[str, Any] = {}
         for raw_k, raw_v in value.items():
             key_str = str(raw_k)
-            if _normalize_key_name(key_str) in _SENSITIVE_KEY_NORMS:
+            if _is_sensitive_key(_normalize_key_name(key_str), raw_v):
                 sanitized[key_str] = REDACTED_VALUE
             else:
                 sanitized[key_str] = redact_sensitive_fields(raw_v)
@@ -146,13 +200,14 @@ def _utc_iso_now() -> str:
 
 
 class WormAuditWriter:
-    """Thread-safe append-only hash-chained WORM JSONL writer."""
+    """Thread-safe and multi-process-safe append-only hash-chained WORM JSONL writer."""
 
     def __init__(self, log_path: str | Path | None = None, *, fsync: bool = True) -> None:
         self._explicit_path = Path(log_path) if log_path is not None else None
         self._fsync = fsync
         self._lock = real_threading.RLock()
         self._initialized_path: Path | None = None
+        self._last_synced_size: int = -1
         self._next_seq_no: int = 1
         self._last_hash: str = GENESIS_PREV_HASH
 
@@ -163,16 +218,17 @@ class WormAuditWriter:
         raw = os.getenv("CHIRIFY_WORM_LOG_PATH", DEFAULT_WORM_LOG_PATH).strip()
         return Path(raw or DEFAULT_WORM_LOG_PATH)
 
-    def _sync_chain_state_locked(self, path: Path) -> None:
+    def _sync_chain_state_locked(self, path: Path, *, current_size: int | None = None) -> None:
         """Initialize or resume ``seq_no`` and ``prev_hash`` from an existing JSONL file."""
-        if self._initialized_path == path and path.exists():
+        stat_size = current_size if current_size is not None else (path.stat().st_size if path.exists() else 0)
+        if self._initialized_path == path and stat_size == self._last_synced_size and path.exists():
             return
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists() or path.stat().st_size == 0:
+        if stat_size == 0 or not path.exists():
             self._next_seq_no = 1
             self._last_hash = GENESIS_PREV_HASH
             self._initialized_path = path
+            self._last_synced_size = 0
             return
 
         last_non_empty = ""
@@ -190,41 +246,55 @@ class WormAuditWriter:
             self._next_seq_no = int(parsed["seq_no"]) + 1
             self._last_hash = str(parsed["record_hash"])
         self._initialized_path = path
+        self._last_synced_size = stat_size
 
     def append(self, event_type: str, payload: Mapping[str, Any] | None = None) -> WormAuditRecord:
         """Redact, hash-chain, and atomically append a UTC event line to the WORM log."""
         clean_event_type = str(event_type or "audit.event").strip()
         redacted_payload = redact_sensitive_fields(dict(payload or {}))
+        target_path = self.resolve_path()
+        path_lock = _get_path_lock(target_path)
 
-        with self._lock:
-            target_path = self.resolve_path()
-            self._sync_chain_state_locked(target_path)
-
-            seq_no = self._next_seq_no
-            prev_hash = self._last_hash
-            ts_utc = _utc_iso_now()
-
-            unsigned = {
-                "seq_no": seq_no,
-                "timestamp_utc": ts_utc,
-                "event_type": clean_event_type,
-                "payload": redacted_payload,
-                "prev_hash": prev_hash,
-            }
-            record_hash = compute_record_hash(unsigned)
-            signed = {**unsigned, "record_hash": record_hash}
-            serialized_line = json.dumps(signed, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
-
-            fd = os.open(target_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with path_lock, self._lock:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(target_path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
             try:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                current_size = os.fstat(fd).st_size
+                self._sync_chain_state_locked(target_path, current_size=current_size)
+
+                seq_no = self._next_seq_no
+                prev_hash = self._last_hash
+                ts_utc = _utc_iso_now()
+
+                unsigned = {
+                    "seq_no": seq_no,
+                    "timestamp_utc": ts_utc,
+                    "event_type": clean_event_type,
+                    "payload": redacted_payload,
+                    "prev_hash": prev_hash,
+                }
+                record_hash = compute_record_hash(unsigned)
+                signed = {**unsigned, "record_hash": record_hash}
+                serialized_line = (
+                    json.dumps(signed, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+                )
+
                 os.write(fd, serialized_line.encode("utf-8"))
                 if self._fsync:
                     os.fsync(fd)
-            finally:
-                os.close(fd)
 
-            self._next_seq_no = seq_no + 1
-            self._last_hash = record_hash
+                self._next_seq_no = seq_no + 1
+                self._last_hash = record_hash
+                self._last_synced_size = os.fstat(fd).st_size
+            finally:
+                if fcntl is not None:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+                os.close(fd)
 
         return WormAuditRecord(
             seq_no=seq_no,
