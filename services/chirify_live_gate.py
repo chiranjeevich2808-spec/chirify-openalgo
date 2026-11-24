@@ -65,6 +65,8 @@ class EntitlementClaims:
     static_ip_verified: bool = False
     exchange_algo_id: str = ""
     personal_family_under_10ops_attested: bool = False
+    kill_switch_engaged: bool = False
+    live_trading_permitted: bool | None = None
     issued_at: int | None = None
     expires_at: int | None = None
 
@@ -104,6 +106,11 @@ class EntitlementClaims:
             if "hosted_cloud" in data
             else default_hosted
         )
+        live_perm = (
+            _strict_bool(data["live_trading_permitted"])
+            if "live_trading_permitted" in data and data["live_trading_permitted"] is not None
+            else None
+        )
 
         return cls(
             tenant_id=str(data.get("tenant_id") or "").strip(),
@@ -122,6 +129,8 @@ class EntitlementClaims:
             personal_family_under_10ops_attested=_strict_bool(
                 data.get("personal_family_under_10ops_attested", False)
             ),
+            kill_switch_engaged=_strict_bool(data.get("kill_switch_engaged", False)),
+            live_trading_permitted=live_perm,
             issued_at=_int_val(iat_raw) if iat_raw is not None else None,
             expires_at=_int_val(exp_raw) if exp_raw is not None else None,
         )
@@ -292,7 +301,7 @@ def evaluate_live_gate(
     env: Mapping[str, str] | None = None,
 ) -> LiveGateVerdict:
     """Deterministically evaluate Cohort-A sandbox, risk, SEBI, and emergency kill-switch gates."""
-    if is_emergency_kill_switch_engaged(env):
+    if is_emergency_kill_switch_engaged(env) or claims.kill_switch_engaged:
         reason = (
             "Emergency compliance kill switch (CHIRIFY_EMERGENCY_KILL_SWITCH) is engaged; "
             "all Live mode activations are unconditionally blocked."
@@ -301,6 +310,14 @@ def evaluate_live_gate(
             allowed=False,
             code="emergency_kill_switch_engaged",
             message=f"Live mode blocked [emergency_kill_switch_engaged]: {reason}",
+            reasons=(reason,),
+        )
+    if claims.live_trading_permitted is False:
+        reason = "Entitlement token explicitly disables live trading (live_trading_permitted=False)."
+        return LiveGateVerdict(
+            allowed=False,
+            code="live_trading_disabled",
+            message=f"Live mode blocked [live_trading_disabled]: {reason}",
             reasons=(reason,),
         )
 

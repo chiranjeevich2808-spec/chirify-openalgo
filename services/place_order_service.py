@@ -200,6 +200,29 @@ def place_order_with_auth(
 
         return success, response, status_code
 
+    # If not in analyze mode, enforce DORA/SEBI emergency kill-switch unconditionally
+    from services.chirify_live_gate import is_emergency_kill_switch_engaged
+
+    if is_emergency_kill_switch_engaged():
+        error_response = {
+            "status": "error",
+            "code": "emergency_kill_switch_engaged",
+            "message": "Emergency compliance kill switch is engaged; live broker order blocked.",
+        }
+        bus.publish(
+            OrderFailedEvent(
+                mode="live",
+                api_type="placeorder",
+                request_data=order_request_data,
+                response_data=error_response,
+                api_key=api_key,
+                symbol=order_data.get("symbol", ""),
+                exchange=order_data.get("exchange", ""),
+                error_message=error_response["message"],
+            )
+        )
+        return False, error_response, 403
+
     # If not in analyze mode, proceed with actual order placement
     broker_module = import_broker_module(broker)
     if broker_module is None:
