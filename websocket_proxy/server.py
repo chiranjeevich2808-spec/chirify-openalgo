@@ -821,11 +821,18 @@ class WebSocketProxy:
         """
         try:
             from database.auth_db import Auth
+            from utils.db_sessions import session_cleanup
 
-            auth_obj = Auth.query.filter_by(name=user_id).first()
+            with session_cleanup():
+                auth_obj = Auth.query.filter_by(name=user_id).first()
+                active_broker = (
+                    auth_obj.broker
+                    if (auth_obj and not auth_obj.is_revoked and auth_obj.broker)
+                    else None
+                )
 
-            if auth_obj and not auth_obj.is_revoked and auth_obj.broker:
-                broker_name = auth_obj.broker
+            if active_broker:
+                broker_name = active_broker
                 logger.info(f"Found broker '{broker_name}' for user {user_id} from database")
             else:
                 # Fallback to environment variable
@@ -852,7 +859,7 @@ class WebSocketProxy:
             valid_brokers_list = os.getenv("VALID_BROKERS", "").split(",")
             valid_brokers_list = [b.strip() for b in valid_brokers_list if b.strip()]
 
-            if broker_name not in valid_brokers_list:
+            if broker_name != "chirify_sandbox" and broker_name not in valid_brokers_list:
                 logger.error(
                     f"Broker '{broker_name}' is not in VALID_BROKERS list: {valid_brokers_list}"
                 )
@@ -2069,6 +2076,11 @@ class WebSocketProxy:
                     ("BSE", "INDEX"),
                     ("MCX", "INDEX"),
                     ("GLOBAL", "INDEX"),
+                    ("US", "EQUITY"),
+                    ("US", "OPTIONS"),
+                    ("EU", "EQUITY"),
+                    ("CRYPTO", "SWAP"),
+                    ("CRYPTO", "OPTIONS"),
                 )
                 if len(remaining) >= 2 and (remaining[0], remaining[1]) in _MULTI_SEGMENT_EXCHANGE_PREFIXES:
                     exchange = f"{remaining[0]}_{remaining[1]}"

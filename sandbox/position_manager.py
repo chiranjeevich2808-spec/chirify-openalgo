@@ -1316,10 +1316,11 @@ class PositionManager:
 def update_all_positions_mtm():
     """Background task to update MTM for all positions"""
     try:
-        # Skip MTM updates when market is closed (prices won't change)
+        # Skip MTM updates when market is closed (unless opt-in 24/7 Sandbox is active)
         from database.market_calendar_db import is_market_open
+        from database.sandbox_db import is_24x7_sandbox_enabled
 
-        if not is_market_open():
+        if not is_24x7_sandbox_enabled() and not is_market_open():
             logger.debug("Market closed - skipping MTM update")
             return
 

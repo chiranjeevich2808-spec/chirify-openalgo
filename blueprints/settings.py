@@ -32,8 +32,22 @@ def set_mode(mode):
         # Set the mode and start or stop the execution engine to match, as
         # one step. This route has only ever managed the engine, not the
         # square-off scheduler or the settlement catch-up, and still does not.
+        from services.chirify_live_gate import LiveGateBlockedError
+
         try:
             apply_analyze_mode(bool(mode), with_scheduler=False, catchup=False)
+        except LiveGateBlockedError as exc:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "code": exc.verdict.code,
+                        "message": exc.verdict.message,
+                        "reasons": list(exc.verdict.reasons),
+                    }
+                ),
+                exc.status_code,
+            )
         except LockBusy:
             return jsonify({"error": MODE_BUSY_MESSAGE}), 409
         mode_name = "Analyze" if mode else "Live"

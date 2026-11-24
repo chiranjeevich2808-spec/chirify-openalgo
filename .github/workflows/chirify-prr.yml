@@ -1,0 +1,42 @@
+name: Chirify PRR Gate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chirify-prr:
+    name: Chirify Execution Pod PRR (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Sync dependencies
+        run: uv sync --dev
+      - name: Ruff lint check (Chirify-owned modules)
+        run: |
+          uv run ruff check \
+            utils/startup_invariants.py \
+            services/chirify_*.py \
+            services/qlib_snapshot_service.py \
+            subscribers/worm_audit_subscriber.py \
+            blueprints/internal_ops.py \
+            blueprints/chirify_*.py \
+            broker/chirify_sandbox \
+            broker/alpaca \
+            broker/ibkr \
+            broker/ccxt \
+            test/chirify
+      - name: Run Chirify PRR test suite
+        run: uv run pytest test/chirify/ -v

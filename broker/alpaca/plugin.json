@@ -1,0 +1,12 @@
+{
+    "Plugin Name": "alpaca",
+    "Plugin URI": "https://chirify.io",
+    "Description": "Alpaca Markets OpenAlgo Plugin — US Equities, US Options & Crypto (Paper & Live)",
+    "Version": "1.0.0",
+    "License": "Apache-2.0",
+    "Author": "Chirify Engineering",
+    "Author URI": "https://chirify.io",
+    "supported_exchanges": ["US_EQUITY", "US_OPTIONS", "CRYPTO"],
+    "broker_type": "US_multi",
+    "leverage_config": true
+}

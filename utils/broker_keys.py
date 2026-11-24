@@ -108,6 +108,10 @@ BROKER_NAMES = {
     "wisdom": "Wisdom Capital",
     "zebu": "Zebu",
     "zerodha": "Zerodha",
+    "alpaca": "Alpaca Markets — US Equities, Options & Crypto",
+    "ibkr": "Interactive Brokers — Global Multi-Asset",
+    "ccxt": "CCXT Unified Crypto — 103+ Spot, Perp & Options Venues",
+    "chirify_sandbox": "Chirify Analyzer Sandbox",
 }
 
 _apply_lock = Lock()
@@ -379,6 +383,17 @@ def resolve(broker):
     Returns:
         BrokerKeys | None: None when neither source has a key for it.
     """
+    if broker == "chirify_sandbox":
+        return BrokerKeys(
+            broker="chirify_sandbox",
+            source="sandbox",
+            api_key="chirify-sandbox",
+            api_secret="chirify-sandbox",
+            api_key_market="",
+            api_secret_market="",
+            redirect_url=default_redirect_url("chirify_sandbox"),
+        )
+
     env = env_file_values()
     if broker and broker == env_broker(env):
         return BrokerKeys(broker=broker, source="env", **env)
@@ -423,7 +438,9 @@ def configured_brokers():
 
 
 def _never_expires(broker):
-    """Whether a broker's session runs past the daily rollover (crypto, or the flag)."""
+    """Whether a broker's session runs past the daily rollover (crypto, sandbox, or the flag)."""
+    if broker == "chirify_sandbox":
+        return True
     if os.getenv("DISABLE_SESSION_EXPIRY", "false").lower() == "true":
         return True
     return broker_type(broker) == "crypto"
@@ -596,7 +613,7 @@ def pin_keys_for(broker):
         when no keys could be found for it (forgotten since), and the token
         must not be used.
     """
-    if not broker:
+    if not broker or broker == "chirify_sandbox":
         return True
     current = _staged.get()
     if current is not None and current.kind == "login":

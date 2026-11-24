@@ -127,4 +127,35 @@ def register_all():
     # receives it on its own (subscribers/alert_subscriber.py).
     alert_subscriber.register()
 
+    # --- 5-Year UTC Hash-Chained WORM Audit (opt-in for Chirify SaaS pods) ---
+    import os
+
+    if os.getenv("CHIRIFY_WORM_AUDIT_ENABLED", "").strip().lower() in (
+        "true",
+        "1",
+        "yes",
+    ) or os.getenv("CHIRIFY_WORM_LOG_PATH", "").strip():
+        from subscribers import worm_audit_subscriber
+
+        for _worm_topic in (
+            "order.placed",
+            "order.failed",
+            "order.modified",
+            "order.modify_failed",
+            "order.cancelled",
+            "order.cancel_failed",
+            "orders.all_cancelled",
+            "position.closed",
+            "gtt.placed",
+            "gtt.modified",
+            "gtt.cancelled",
+            "gtt.triggered",
+        ):
+            bus.subscribe(
+                _worm_topic,
+                worm_audit_subscriber.on_bus_event,
+                f"worm:{_worm_topic}",
+                critical=True,
+            )
+
     logger.debug("EventBus: all subscribers registered")

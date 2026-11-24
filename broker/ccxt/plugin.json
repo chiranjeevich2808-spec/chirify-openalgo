@@ -1,0 +1,12 @@
+{
+    "Plugin Name": "ccxt",
+    "Plugin URI": "https://chirify.io",
+    "Description": "CCXT Unified Crypto OpenAlgo Plugin — Spot, Linear/Inverse Perpetual Swaps & Options",
+    "Version": "1.0.0",
+    "License": "MIT",
+    "Author": "Chirify Engineering",
+    "Author URI": "https://chirify.io",
+    "supported_exchanges": ["CRYPTO", "CRYPTO_SWAP", "CRYPTO_OPTIONS"],
+    "broker_type": "crypto",
+    "leverage_config": true
+}

@@ -26,9 +26,10 @@ def is_session_expiry_disabled():
     # says whether it trades around the clock. The stored session names it,
     # not the environment, which changes as soon as a login is started.
     try:
-        from utils.broker_keys import broker_type, logged_in_broker
+        from utils.broker_keys import _never_expires, broker_type, logged_in_broker
 
-        return broker_type(logged_in_broker()) == "crypto"
+        active_broker = logged_in_broker()
+        return _never_expires(active_broker) or broker_type(active_broker) == "crypto"
     except Exception:
         return False
 
@@ -45,12 +46,12 @@ def get_session_expiry_time(broker=None):
     crypto_login = False
     if broker:
         try:
-            from utils.broker_keys import broker_type
+            from utils.broker_keys import _never_expires, broker_type
 
-            crypto_login = broker_type(broker) == "crypto"
+            crypto_login = _never_expires(broker) or broker_type(broker) == "crypto"
         except Exception:
             crypto_login = False
-    # Skip expiry for crypto brokers (24/7 markets)
+    # Skip expiry for crypto & persistent-credential/sandbox brokers (24/7 markets)
     if crypto_login or is_session_expiry_disabled():
         logger.debug("Session expiry disabled (crypto broker / 24/7 market)")
         return timedelta(days=365)

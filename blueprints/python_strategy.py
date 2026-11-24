@@ -3508,7 +3508,6 @@ def save_strategy(strategy_id):
 # Cleanup on shutdown
 def cleanup_on_exit():
     """Clean up all running processes on application exit"""
-    logger.info("Cleaning up running strategies...")
     # Snapshot under the lock, stop outside it: stop_strategy_process takes the
     # lock itself and waits for each process, so holding it across the loop
     # would serialise shutdown behind every termination in turn. Starts are
@@ -3516,6 +3515,12 @@ def cleanup_on_exit():
     with PROCESS_LOCK:
         _SHUTTING_DOWN.set()
         strategy_ids = list(RUNNING_STRATEGIES.keys())
+    if not strategy_ids:
+        return
+    try:
+        logger.info("Cleaning up running strategies...")
+    except Exception:
+        pass
     keep_record = _SHUTDOWN_KEEPS_RECORDS.is_set()
     for strategy_id in strategy_ids:
         try:
@@ -3525,7 +3530,10 @@ def cleanup_on_exit():
                 stop_strategy_process(strategy_id)
         except Exception:
             pass
-    logger.info("Cleanup complete")
+    try:
+        logger.info("Cleanup complete")
+    except Exception:
+        pass
 
 
 #: How long begin_shutdown gives the running strategies to stop, together,

@@ -214,14 +214,27 @@ def process_basket_order_with_auth(
         analyze_results = []
         total_orders = len(basket_data["orders"])
 
-        # Sort orders to prioritize BUY orders before SELL orders (same as live mode)
-        buy_orders = [
-            order for order in basket_data["orders"] if order.get("action", "").upper() == "BUY"
-        ]
-        sell_orders = [
-            order for order in basket_data["orders"] if order.get("action", "").upper() == "SELL"
-        ]
-        sorted_orders = buy_orders + sell_orders
+        preserve_order = bool(basket_data.get("preserve_order"))
+        order_priority = str(basket_data.get("order_priority") or "").strip().lower()
+        if preserve_order:
+            sorted_orders = list(basket_data["orders"])
+        else:
+            buy_orders = [
+                order for order in basket_data["orders"] if order.get("action", "").upper() == "BUY"
+            ]
+            sell_orders = [
+                order for order in basket_data["orders"] if order.get("action", "").upper() == "SELL"
+            ]
+            other_orders = [
+                order
+                for order in basket_data["orders"]
+                if order.get("action", "").upper() not in ("BUY", "SELL")
+            ]
+            sorted_orders = (
+                sell_orders + buy_orders + other_orders
+                if order_priority == "sell_first"
+                else buy_orders + sell_orders + other_orders
+            )
 
         # Pre-fetch all quotes in a single multiquotes call instead of
         # N individual REST calls (one per order). This reduces basket
@@ -339,14 +352,27 @@ def process_basket_order_with_auth(
         ))
         return False, error_response, 404
 
-    # Sort orders to prioritize BUY orders before SELL orders
-    buy_orders = [
-        order for order in basket_data["orders"] if order.get("action", "").upper() == "BUY"
-    ]
-    sell_orders = [
-        order for order in basket_data["orders"] if order.get("action", "").upper() == "SELL"
-    ]
-    sorted_orders = buy_orders + sell_orders
+    preserve_order = bool(basket_data.get("preserve_order"))
+    order_priority = str(basket_data.get("order_priority") or "").strip().lower()
+    if preserve_order:
+        sorted_orders = list(basket_data["orders"])
+    else:
+        buy_orders = [
+            order for order in basket_data["orders"] if order.get("action", "").upper() == "BUY"
+        ]
+        sell_orders = [
+            order for order in basket_data["orders"] if order.get("action", "").upper() == "SELL"
+        ]
+        other_orders = [
+            order
+            for order in basket_data["orders"]
+            if order.get("action", "").upper() not in ("BUY", "SELL")
+        ]
+        sorted_orders = (
+            sell_orders + buy_orders + other_orders
+            if order_priority == "sell_first"
+            else buy_orders + sell_orders + other_orders
+        )
 
     total_orders = len(sorted_orders)
 

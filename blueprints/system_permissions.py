@@ -37,7 +37,16 @@ def get_permission_checks():
     latency_db = extract_db_path("LATENCY_DATABASE_URL", "db/latency.db")
     logs_db = extract_db_path("LOGS_DATABASE_URL", "db/logs.db")
     sandbox_db = extract_db_path("SANDBOX_DATABASE_URL", "db/sandbox.db")
-    historify_db = os.getenv("HISTORIFY_DATABASE_URL", "db/historify.duckdb")
+    raw_historify = (
+        os.getenv("HISTORIFY_DATABASE_PATH")
+        or os.getenv("HISTORIFY_DATABASE_URL")
+        or "db/historify.duckdb"
+    )
+    historify_db = (
+        raw_historify[len("duckdb:///") :]
+        if raw_historify.lower().startswith("duckdb:///")
+        else raw_historify
+    )
 
     # Extract db directory from main database path
     db_dir = os.path.dirname(main_db) if main_db else "db"

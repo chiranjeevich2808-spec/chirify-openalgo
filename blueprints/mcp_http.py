@@ -419,6 +419,7 @@ def _serve_sdk_in_process(mcp_module: Any) -> None:
     sdk.client = httpx.Client(
         transport=httpx.WSGITransport(app=_InProcessWsgi(app)),
         timeout=getattr(sdk, "timeout", 120.0),
+        trust_env=False,
     )
     try:
         previous.close()

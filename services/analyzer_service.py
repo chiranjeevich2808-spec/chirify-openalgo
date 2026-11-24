@@ -119,6 +119,7 @@ def apply_analyze_mode(
     with_scheduler: bool = True,
     catchup: bool = True,
     timeout: float | None = MODE_TRANSITION_TIMEOUT_SECONDS,
+    broker: str | None = None,
 ) -> bool:
     """Set the analyzer mode and bring the sandbox engine in line with it, as one step.
 
@@ -133,19 +134,35 @@ def apply_analyze_mode(
         with_scheduler: Also start or stop the square-off scheduler.
         catchup: When turning on, run the missed-settlement catch-up.
         timeout: See :func:`mode_transition`.
+        broker: Optional broker identifier for SEBI / regional Live Gate checks.
 
     Returns:
         The persisted mode: True for analyzer (sandbox) mode.
 
     Raises:
         LockBusy: Under gthread, another change is still in progress.
+        LiveGateBlockedError: When ``CHIRIFY_ENFORCE_LIVE_GATE`` is enabled and
+            switching to Live mode fails qualification or compliance checks.
         Exception: Whatever writing the mode raised, after the reconcile.
     """
     with mode_transition(timeout):
         if toggle:
             new_mode = not get_analyze_mode()
+        target_mode = bool(new_mode)
+        if not target_mode:
+            from services.chirify_live_gate import (
+                enforce_live_mode_transition,
+                is_live_gate_enforced,
+            )
+
+            if is_live_gate_enforced():
+                enforce_live_mode_transition(
+                    current_mode=bool(get_analyze_mode()),
+                    target_mode=target_mode,
+                    broker=broker,
+                )
         try:
-            set_analyze_mode(bool(new_mode))
+            set_analyze_mode(target_mode)
         finally:
             persisted = bool(get_analyze_mode())
             _reconcile_sandbox(persisted, with_scheduler=with_scheduler, catchup=catchup)
@@ -226,10 +243,21 @@ def toggle_analyzer_mode_with_auth(
         # Get the requested mode
         new_mode = analyzer_data.get("mode", False)
 
+        from services.chirify_live_gate import LiveGateBlockedError
+
         # Set the analyzer mode and start or stop the execution engine and
         # square-off scheduler to match, as one step.
         try:
-            new_mode = apply_analyze_mode(new_mode)
+            new_mode = apply_analyze_mode(new_mode, broker=broker)
+        except LiveGateBlockedError as exc:
+            blocked_response = {
+                "status": "error",
+                "code": exc.verdict.code,
+                "message": exc.verdict.message,
+                "reasons": list(exc.verdict.reasons),
+            }
+            log_executor.submit(async_log_order, "analyzer_toggle", request_data, blocked_response)
+            return False, blocked_response, exc.status_code
         except LockBusy:
             busy_response = {"status": "error", "message": MODE_BUSY_MESSAGE}
             log_executor.submit(async_log_order, "analyzer_toggle", original_data, busy_response)

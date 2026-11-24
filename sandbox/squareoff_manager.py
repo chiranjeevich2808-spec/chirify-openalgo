@@ -94,11 +94,14 @@ class SquareOffManager:
 
     def _check_and_square_off(self):
         try:
+            from database.sandbox_db import is_24x7_sandbox_enabled
+
+            sandbox_24x7 = is_24x7_sandbox_enabled()
             now = datetime.now(self.ist)
             current_time = now.time()
 
-            # Step 1: Cancel all open MIS orders past square-off time
-            cancelled_count = self._cancel_open_mis_orders(current_time)
+            # Step 1: Cancel all open MIS orders past square-off time (skipped in opt-in 24/7 sandbox mode)
+            cancelled_count = 0 if sandbox_24x7 else self._cancel_open_mis_orders(current_time)
 
             # Step 1b: Cancel open orders on expired F&O contracts. Expired
             # POSITIONS are settled by position_manager, but an unfilled
@@ -123,28 +126,29 @@ class SquareOffManager:
                 logger.exception(f"Error settling expired positions: {e}")
 
             # Step 2: Get all open MIS positions (quantity != 0)
-            mis_positions = (
-                SandboxPositions.query.filter_by(product="MIS")
-                .filter(SandboxPositions.quantity != 0)
-                .all()
-            )
-
             positions_to_close = []
-            if mis_positions:
-                # Check each position against its exchange's square-off time
-                for position in mis_positions:
-                    exchange = position.exchange
-                    square_off_time = self.square_off_times.get(exchange)
+            if not sandbox_24x7:
+                mis_positions = (
+                    SandboxPositions.query.filter_by(product="MIS")
+                    .filter(SandboxPositions.quantity != 0)
+                    .all()
+                )
 
-                    if not square_off_time:
-                        logger.warning(f"No square-off time configured for exchange {exchange}")
-                        continue
+                if mis_positions:
+                    # Check each position against its exchange's square-off time
+                    for position in mis_positions:
+                        exchange = position.exchange
+                        square_off_time = self.square_off_times.get(exchange)
 
-                    # Check if current time has passed square-off time
-                    if current_time >= square_off_time:
-                        positions_to_close.append(position)
-            else:
-                logger.debug("No MIS positions to square-off")
+                        if not square_off_time:
+                            logger.warning(f"No square-off time configured for exchange {exchange}")
+                            continue
+
+                        # Check if current time has passed square-off time
+                        if current_time >= square_off_time:
+                            positions_to_close.append(position)
+                else:
+                    logger.debug("No MIS positions to square-off")
 
             if positions_to_close:
                 logger.info(f"Found {len(positions_to_close)} MIS positions to square-off")

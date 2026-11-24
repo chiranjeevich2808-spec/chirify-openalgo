@@ -62,6 +62,11 @@ from blueprints.broker_credentials import (
 )
 from blueprints.chart_test import chart_test_bp  # Standalone chart test page (dev/testing only)
 from blueprints.chartink import chartink_bp  # Import the chartink blueprint
+from blueprints.chirify_sso import chirify_sso_bp  # Single-use HS256 Chirify SSO launch ticket
+from blueprints.chirify_status import (  # AGPL-3.0 telemetry & K8s probes/metrics
+    chirify_probes_bp,
+    chirify_status_bp,
+)
 from blueprints.core import core_bp
 from blueprints.custom_indicators import custom_indicators_bp  # User chart indicators
 from blueprints.custom_straddle import custom_straddle_bp  # Import custom straddle blueprint
@@ -72,6 +77,7 @@ from blueprints.gc_json import gc_json_bp
 from blueprints.gex import gex_bp  # Import the GEX blueprint
 from blueprints.health import health_bp  # Import the health monitoring blueprint
 from blueprints.historify import historify_bp  # Import the historify blueprint
+from blueprints.internal_ops import internal_ops_bp  # Import internal cluster ops blueprint
 from blueprints.ivchart import ivchart_bp  # Import the IV chart blueprint
 from blueprints.ivsmile import ivsmile_bp  # Import the IV Smile blueprint
 from blueprints.latency import latency_bp  # Import the latency blueprint
@@ -183,6 +189,10 @@ def create_app():
     from subscribers import register_all as register_event_subscribers
 
     register_event_subscribers()
+
+    from services.chirify_bootstrap_service import install_managed_pod_setup_guard
+
+    install_managed_pod_setup_guard(app)
 
     # Initialize CSRF protection
     csrf = CSRFProtect(app)
@@ -359,6 +369,14 @@ def create_app():
     app.register_blueprint(system_permissions_bp)  # Register System permissions blueprint
     app.register_blueprint(strategy_portfolio_bp)  # Register Strategy Portfolio blueprint
     app.register_blueprint(postback_bp)  # Register broker postback (order-update webhook) blueprint
+    app.register_blueprint(internal_ops_bp)  # Register internal cluster operations blueprint
+    csrf.exempt(internal_ops_bp)
+    app.register_blueprint(chirify_sso_bp)  # Register single-use Chirify SSO handoff blueprint
+    csrf.exempt(chirify_sso_bp)
+    app.register_blueprint(chirify_status_bp)  # Public AGPL-3.0 attribution & pod telemetry
+    csrf.exempt(chirify_status_bp)
+    app.register_blueprint(chirify_probes_bp)  # Unauthenticated K8s /healthz, /readyz & /metrics
+    csrf.exempt(chirify_probes_bp)
 
     # Remote MCP (HTTP + OAuth) — opt-in via MCP_HTTP_ENABLED. Off by default.
     # Pre-flight refusal: must NEVER coexist with FLASK_DEBUG=True (debug-mode
@@ -513,8 +531,12 @@ def create_app():
         """Block requests until background database initialization completes."""
         from flask import request
 
-        # Static assets don't need DB
-        if request.path.startswith("/static/") or request.path.startswith("/assets/"):
+        # Static assets and K8s/Prometheus probes don't block on DB init
+        if (
+            request.path.startswith("/static/")
+            or request.path.startswith("/assets/")
+            or request.path in ("/healthz", "/readyz", "/metrics")
+        ):
             return
 
         # Wait up to 30s for DB init (typically ~3.5s)
@@ -531,7 +553,11 @@ def create_app():
         """
         from flask import request
 
-        if request.path.startswith("/static/") or request.path.startswith("/assets/"):
+        if (
+            request.path.startswith("/static/")
+            or request.path.startswith("/assets/")
+            or request.path in ("/healthz", "/readyz", "/metrics")
+        ):
             return
 
         from utils.session import end_session_if_signed_out
@@ -549,10 +575,14 @@ def create_app():
         if (
             request.path.startswith("/static/")
             or request.path.startswith("/api/")
+            or request.path.startswith("/internal/")
             or request.path.startswith("/assets/")  # React frontend assets
             or request.path
             in [
                 "/",
+                "/healthz",
+                "/readyz",
+                "/metrics",
                 "/auth/login",
                 "/auth/reset-password",
                 "/auth/csrf-token",
@@ -565,6 +595,7 @@ def create_app():
                 "/login",  # React login page
             ]
             or request.path.startswith("/auth/broker/")  # OAuth callbacks
+            or request.path.startswith("/auth/chirify/")  # Chirify Control Plane SSO tickets
             or request.path.startswith("/_reload-ws")
         ):  # WebSocket reload endpoint
             return
@@ -655,7 +686,7 @@ def create_app():
         # white-screening the SPA with "Unexpected token '<'" instead of failing
         # cleanly. React routes without a Flask endpoint still fall through to
         # the shell, which is deliberate.
-        if path.startswith(("/api/", "/flow/api/", "/flow/webhook/")):
+        if path.startswith(("/api/", "/internal/", "/flow/api/", "/flow/webhook/")):
             return jsonify({"status": "error", "message": "Not found", "path": path}), 404
 
         if path.startswith(("/assets/", "/static/")) or "." in path.rsplit("/", 1)[-1]:
@@ -1113,6 +1144,18 @@ def shutdown_database_sessions(exception=None):
 logger.debug("Starting WebSocket proxy")
 start_websocket_proxy(app)
 
+# Pre-warm SharedZmqPublisher in Analyzer/Sandbox mode so the first order fill
+# publishes over loopback ZMQ without slow-joiner latency.
+try:
+    from database.settings_db import get_analyze_mode as _get_analyze_mode_zmq
+
+    if _get_analyze_mode_zmq():
+        from websocket_proxy.connection_manager import SharedZmqPublisher
+
+        SharedZmqPublisher.instance().connect()
+except Exception as _zmq_warm_err:
+    logger.debug(f"SharedZmqPublisher pre-warm skipped: {_zmq_warm_err}")
+
 # Under the gthread worker, end Socket.IO sessions as soon as gunicorn starts
 # its graceful stop: each open session holds a worker thread, and a thread
 # still held when the window closes turns the stop into a kill. A no-op under
@@ -1279,4 +1322,11 @@ if __name__ == "__main__":
 
         install_signal_handlers()
 
-    socketio.run(app, host=host_ip, port=port, debug=debug, reloader_options=reloader_options)
+    socketio.run(
+        app,
+        host=host_ip,
+        port=port,
+        debug=debug,
+        reloader_options=reloader_options,
+        allow_unsafe_werkzeug=True,
+    )

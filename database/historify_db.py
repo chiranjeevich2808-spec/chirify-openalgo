@@ -28,6 +28,7 @@ load_dotenv()
 
 # Database path - in /db folder like other OpenAlgo databases
 HISTORIFY_DB_PATH = os.getenv("HISTORIFY_DATABASE_PATH", "db/historify.duckdb")
+_DEFAULT_HISTORIFY_DB_PATH = HISTORIFY_DB_PATH
 
 # DuckDB permits concurrent connections, but conflicting writes are optimistic:
 # one transaction loses rather than waiting for another to finish.  Historify is
@@ -77,13 +78,42 @@ def _retry_duckdb_conflict(func):
     return wrapped
 
 
+def _normalize_duckdb_path(raw: str) -> str:
+    """Strip whitespace and optional ``duckdb:///`` URL prefix from a DB path."""
+    cleaned = str(raw or "").strip()
+    if cleaned.lower().startswith("duckdb:///"):
+        cleaned = cleaned[len("duckdb:///") :]
+    return cleaned
+
+
 def get_db_path() -> str:
-    """Get absolute path to the DuckDB database file."""
-    if os.path.isabs(HISTORIFY_DB_PATH):
-        return HISTORIFY_DB_PATH
+    """Get absolute path to the DuckDB database file.
+
+    Precedence:
+    1. Explicitly monkeypatched module attribute ``HISTORIFY_DB_PATH``.
+    2. Live ``HISTORIFY_DATABASE_PATH`` environment variable.
+    3. Live ``HISTORIFY_DATABASE_URL`` environment variable (stripping ``duckdb:///``).
+    4. Default ``"db/historify.duckdb"``.
+    """
+    if HISTORIFY_DB_PATH != _DEFAULT_HISTORIFY_DB_PATH:
+        raw_path = _normalize_duckdb_path(HISTORIFY_DB_PATH)
+    else:
+        raw_path = (
+            _normalize_duckdb_path(os.getenv("HISTORIFY_DATABASE_PATH", ""))
+            or _normalize_duckdb_path(os.getenv("HISTORIFY_DATABASE_URL", ""))
+            or "db/historify.duckdb"
+        )
+    if not raw_path:
+        raw_path = "db/historify.duckdb"
+    if os.path.isabs(raw_path):
+        return raw_path
     # Relative to the openalgo directory
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base_dir, HISTORIFY_DB_PATH)
+    return os.path.join(base_dir, raw_path)
+
+
+# Public alias for callers expecting get_historify_db_path()
+get_historify_db_path = get_db_path
 
 
 def ensure_db_directory():
@@ -93,6 +123,124 @@ def ensure_db_directory():
     if db_dir and not os.path.exists(db_dir):
         os.makedirs(db_dir, exist_ok=True)
         logger.info(f"Created database directory: {db_dir}")
+
+
+_duckdb_open_lock = real_threading.Lock()
+_duckdb_anchors: dict[str, Any] = {}
+_native_duckdb_connect: Any = None
+
+
+def _get_native_duckdb_connect():
+    global _native_duckdb_connect
+    with _duckdb_open_lock:
+        if _native_duckdb_connect is None:
+            import duckdb as _duckdb_mod
+
+            _native_duckdb_connect = _duckdb_mod.connect
+        return _native_duckdb_connect
+
+
+def close_duckdb_anchor(db_path: str | None = None) -> None:
+    """Close and evict a cached warm DuckDB anchor connection (or all anchors if None)."""
+    with _duckdb_open_lock:
+        if db_path is None:
+            targets = list(_duckdb_anchors.items())
+            _duckdb_anchors.clear()
+        else:
+            resolved = os.path.abspath(_normalize_duckdb_path(db_path))
+            anchor = _duckdb_anchors.pop(resolved, None)
+            targets = [(resolved, anchor)] if anchor is not None else []
+        for _, anchor in targets:
+            try:
+                anchor.close()
+            except Exception:
+                pass
+
+
+def _is_incompatible_duckdb_error(exc: Exception) -> bool:
+    """Return True when DuckDB failed to open a corrupt or incompatible storage version file."""
+    msg = str(exc).lower()
+    return (
+        "version number" in msg
+        or "not a valid duckdb" in msg
+        or "incompatible serialization" in msg
+        or "corrupt" in msg
+    )
+
+
+def _quarantine_corrupt_duckdb(resolved: str) -> str | None:
+    """Move an incompatible/corrupt DuckDB file (and sibling .wal) aside so a clean DB can init."""
+    import time
+
+    if not os.path.exists(resolved):
+        return None
+    ts = int(time.time())
+    backup_path = f"{resolved}.incompatible.{ts}.bak"
+    counter = 1
+    while os.path.exists(backup_path):
+        backup_path = f"{resolved}.incompatible.{ts}.{counter}.bak"
+        counter += 1
+    os.replace(resolved, backup_path)
+    wal_path = f"{resolved}.wal"
+    if os.path.exists(wal_path):
+        try:
+            os.replace(wal_path, f"{backup_path}.wal")
+        except OSError:
+            pass
+    logger.warning(
+        f"Quarantined incompatible/corrupt DuckDB file '{resolved}' to '{backup_path}'; "
+        "initializing clean DuckDB database."
+    )
+    return backup_path
+
+
+def acquire_duckdb_cursor(db_path: str, max_retries: int = 3, retry_delay: float = 0.2):
+    """Return an isolated DuckDB cursor backed by a warm per-file anchor connection.
+
+    Keeping one anchor connection per resolved ``db_path`` prevents DuckDB's C++
+    ``DBInstanceCache`` from oscillating between refcount 0 and 1 across native
+    ``gthread`` workers, which otherwise triggers ``Unique file handle conflict``
+    and ``pandas_scan`` registration races under heavy concurrent load.
+    When ``duckdb.connect`` is replaced (e.g. connection-retry tests), bypasses
+    the cached anchor so custom connect hooks and backoff loops execute directly.
+    """
+    import time
+
+    native_connect = _get_native_duckdb_connect()
+    resolved = os.path.abspath(_normalize_duckdb_path(db_path))
+    last_error = None
+    quarantined = False
+    for attempt in range(max_retries):
+        try:
+            import duckdb
+
+            if duckdb.connect is not native_connect:
+                close_duckdb_anchor(resolved)
+                return duckdb.connect(resolved)
+
+            with _duckdb_open_lock:
+                anchor = _duckdb_anchors.get(resolved)
+                if anchor is None:
+                    try:
+                        anchor = duckdb.connect(resolved)
+                    except duckdb.IOException as io_err:
+                        if not quarantined and _is_incompatible_duckdb_error(io_err):
+                            quarantined = True
+                            _quarantine_corrupt_duckdb(resolved)
+                            anchor = duckdb.connect(resolved)
+                        else:
+                            raise
+                    _duckdb_anchors[resolved] = anchor
+                return anchor.cursor()
+        except Exception as e:
+            last_error = e
+            close_duckdb_anchor(resolved)
+            if attempt < max_retries - 1:
+                logger.debug(f"DuckDB connection attempt {attempt + 1} failed, retrying: {e}")
+                time.sleep(retry_delay * (attempt + 1))
+            else:
+                logger.exception(f"Failed to connect to DuckDB after {max_retries} attempts: {e}")
+    raise last_error or Exception("Failed to connect to DuckDB")
 
 
 @contextmanager
@@ -111,30 +259,9 @@ def get_connection(max_retries: int = 3, retry_delay: float = 0.5):
         with get_connection() as conn:
             result = conn.execute("SELECT * FROM market_data").fetchdf()
     """
-    import time
-
     ensure_db_directory()
     db_path = get_db_path()
-    conn = None
-    last_error = None
-
-    for attempt in range(max_retries):
-        try:
-            import duckdb
-
-            conn = duckdb.connect(db_path)
-            break
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries - 1:
-                logger.debug(f"DuckDB connection attempt {attempt + 1} failed, retrying: {e}")
-                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-            else:
-                logger.exception(f"Failed to connect to DuckDB after {max_retries} attempts: {e}")
-
-    if conn is None:
-        raise last_error or Exception("Failed to connect to DuckDB")
-
+    conn = acquire_duckdb_cursor(db_path, max_retries=max_retries, retry_delay=retry_delay)
     try:
         yield conn
     finally:
@@ -1628,11 +1755,34 @@ def vacuum_database():
 # Keep aligned with utils/constants.VALID_EXCHANGES — Historify must accept any
 # exchange the platform validates as legal, otherwise /history download/upload
 # rejects symbols that the live /quote and /history-API paths happily serve.
-SUPPORTED_EXCHANGES = [
-    "NSE", "BSE", "NFO", "BFO", "MCX", "CDS", "BCD", "NCO",
-    "NSE_INDEX", "BSE_INDEX", "MCX_INDEX", "GLOBAL_INDEX",
-    "CRYPTO",
-]
+try:
+    from utils.constants import VALID_EXCHANGES as _PLATFORM_VALID_EXCHANGES
+
+    SUPPORTED_EXCHANGES = list(_PLATFORM_VALID_EXCHANGES)
+except Exception:
+    SUPPORTED_EXCHANGES = [
+        "NSE",
+        "BSE",
+        "NFO",
+        "BFO",
+        "MCX",
+        "CDS",
+        "BCD",
+        "NCDEX",
+        "NCO",
+        "NSE_INDEX",
+        "BSE_INDEX",
+        "MCX_INDEX",
+        "GLOBAL_INDEX",
+        "US_EQUITY",
+        "US_OPTIONS",
+        "EU_EQUITY",
+        "FUTURES",
+        "FOREX",
+        "CRYPTO",
+        "CRYPTO_SWAP",
+        "CRYPTO_OPTIONS",
+    ]
 
 
 def get_supported_intervals(api_key: str) -> list[str]:

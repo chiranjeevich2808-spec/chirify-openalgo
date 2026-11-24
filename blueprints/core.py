@@ -18,6 +18,12 @@ core_bp = Blueprint("core_bp", __name__)
 # This route only handles POST for form submission from React
 @core_bp.route("/setup", methods=["POST"])
 def setup():
+    from services.chirify_bootstrap_service import managed_pod_setup_blocked_response
+
+    blocked = managed_pod_setup_blocked_response()
+    if blocked is not None:
+        return blocked
+
     if find_user_by_username() is not None:
         return redirect(url_for("auth.login"))
 

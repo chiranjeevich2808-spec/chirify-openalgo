@@ -264,6 +264,11 @@ def start_order_update_adapters_on_boot(db_ready=None) -> None:
             for auth_obj in sessions:
                 if not (auth_obj.name and auth_obj.broker):
                     continue
+                if auth_obj.broker.lower() == "chirify_sandbox":
+                    logger.debug(
+                        "Order-update boot scan: chirify_sandbox uses in-memory Analyzer fills; skipping external order socket."
+                    )
+                    continue
                 # is_revoked alone is not proof the token still works. Indian
                 # broker tokens die at the daily rollover (~03:00 IST), but the
                 # row is only flagged revoked by the auto-expiry sweep, which
