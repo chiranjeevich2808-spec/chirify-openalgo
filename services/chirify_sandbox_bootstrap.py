@@ -110,9 +110,12 @@ CORE_UNIVERSE: tuple[CoreInstrument, ...] = (
     CoreInstrument("NTPC", "NSE", "NTPC Limited", "NTPC.NS", 395.0, "ENERGY", "EQ", 1, 0.05, 15_500_000, 0.71, 0.38, 0.26, False),
     CoreInstrument("ONGC", "NSE", "Oil & Natural Gas Corp", "ONGC.NS", 275.0, "ENERGY", "EQ", 1, 0.05, 18_200_000, 0.72, 0.42, 0.29, False),
     CoreInstrument("TATASTEEL", "NSE", "Tata Steel", "TATASTEEL.NS", 152.0, "METALS", "EQ", 1, 0.05, 34_000_000, 0.83, 0.35, 0.31, False),
-    # --- 2 NSE Indices ---
+    # --- 5 Indian Benchmark Indices (NSE_INDEX + BSE_INDEX) ---
     CoreInstrument("NIFTY", "NSE_INDEX", "NIFTY 50", "^NSEI", 25800.0, "INDEX_IN", "INDEX", 1, 0.05, 0, 0.96, 0.05, 0.14, True),
     CoreInstrument("BANKNIFTY", "NSE_INDEX", "NIFTY BANK", "^NSEBANK", 64600.0, "BANKING", "INDEX", 1, 0.05, 0, 0.90, 0.36, 0.18, True),
+    CoreInstrument("FINNIFTY", "NSE_INDEX", "NIFTY FIN SERVICE", "^CNXFIN", 24200.0, "BANKING", "INDEX", 1, 0.05, 0, 0.89, 0.32, 0.16, False),
+    CoreInstrument("MIDCPNIFTY", "NSE_INDEX", "NIFTY MIDCAP SELECT", "^NSEMDCP50", 12850.0, "INDEX_IN", "INDEX", 1, 0.05, 0, 0.85, 0.25, 0.18, False),
+    CoreInstrument("SENSEX", "BSE_INDEX", "BSE SENSEX", "^BSESN", 84500.0, "INDEX_IN", "INDEX", 1, 0.05, 0, 0.96, 0.05, 0.14, False),
     # --- 15 US Equities & ETFs ---
     CoreInstrument("AAPL", "US_EQUITY", "Apple Inc.", "AAPL", 230.0, "MEGACAP_TECH", "EQ", 1, 0.01, 48_000_000, 0.78, 0.42, 0.24, True),
     CoreInstrument("MSFT", "US_EQUITY", "Microsoft Corp.", "MSFT", 425.0, "MEGACAP_TECH", "EQ", 1, 0.01, 22_000_000, 0.79, 0.44, 0.23, True),
@@ -146,7 +149,9 @@ _MARKET_GROUP_FOR_EXCHANGE = {
     "NSE": "INDIA",
     "NSE_INDEX": "INDIA",
     "BSE": "INDIA",
+    "BSE_INDEX": "INDIA",
     "NFO": "INDIA",
+    "BFO": "INDIA",
     "US_EQUITY": "US",
     "CRYPTO": "CRYPTO",
 }
@@ -806,15 +811,18 @@ def _build_sandbox_symtoken_rows(
             }
         )
 
-    # 2. Dynamic future-dated NFO Options + Futures for NIFTY (lot=75, step=50) & BANKNIFTY (lot=30, step=100)
+    # 2. Dynamic future-dated NFO & BFO Options + Futures for NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY & SENSEX
     expiries = compute_future_nfo_expiries(reference_date=reference_date, count=3)
     nfo_tok = 930001
     derivative_specs = (
-        ("NIFTY", spots.get(("NIFTY", "NSE_INDEX"), 25800.0), 50, 75),
-        ("BANKNIFTY", spots.get(("BANKNIFTY", "NSE_INDEX"), 64600.0), 100, 30),
+        ("NIFTY", "NFO", spots.get(("NIFTY", "NSE_INDEX"), 25800.0), 50, 75),
+        ("BANKNIFTY", "NFO", spots.get(("BANKNIFTY", "NSE_INDEX"), 64600.0), 100, 30),
+        ("FINNIFTY", "NFO", spots.get(("FINNIFTY", "NSE_INDEX"), 24200.0), 50, 65),
+        ("MIDCPNIFTY", "NFO", spots.get(("MIDCPNIFTY", "NSE_INDEX"), 12850.0), 25, 120),
+        ("SENSEX", "BFO", spots.get(("SENSEX", "BSE_INDEX"), 84500.0), 100, 20),
     )
 
-    for underlying, spot_px, step, lotsize in derivative_specs:
+    for underlying, deriv_exch, spot_px, step, lotsize in derivative_specs:
         atm = int(round(float(spot_px) / step) * step)
         strikes = [atm + offset * step for offset in range(-7, 8)]  # 15 strikes around spot
         for exp_dt in expiries:
@@ -828,8 +836,8 @@ def _build_sandbox_symtoken_rows(
                     "symbol": fut_sym,
                     "brsymbol": fut_sym,
                     "name": underlying,
-                    "exchange": "NFO",
-                    "brexchange": "NFO",
+                    "exchange": deriv_exch,
+                    "brexchange": deriv_exch,
                     "token": str(nfo_tok),
                     "expiry": exp_db,
                     "strike": 0.0,
@@ -850,8 +858,8 @@ def _build_sandbox_symtoken_rows(
                             "symbol": opt_sym,
                             "brsymbol": opt_sym,
                             "name": underlying,
-                            "exchange": "NFO",
-                            "brexchange": "NFO",
+                            "exchange": deriv_exch,
+                            "brexchange": deriv_exch,
                             "token": str(nfo_tok),
                             "expiry": exp_db,
                             "strike": float(strike),

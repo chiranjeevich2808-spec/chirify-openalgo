@@ -329,13 +329,18 @@ def start_run(
             ),
         )
 
-    # Live is opt-in per strategy and subject to Chirify Cohort-A Live Gate /
-    # DORA emergency kill-switch when enforced. Checked here as well as at every
-    # caller, because this is the last point before real orders.
-    if mode == "live":
-        from services import chirify_live_gate
+    # Enforce DORA Art. 30 emergency kill-switch unconditionally across both sandbox & live
+    from services import chirify_live_gate
 
-        if chirify_live_gate.is_emergency_kill_switch_engaged() or chirify_live_gate.is_live_gate_enforced():
+    if chirify_live_gate.is_emergency_kill_switch_engaged():
+        return StartResult(
+            ok=False,
+            error="Emergency kill switch is engaged; strategy execution is halted.",
+        )
+
+    # Live is opt-in per strategy and subject to Chirify Cohort-A Live Gate when enforced.
+    if mode == "live":
+        if chirify_live_gate.is_live_gate_enforced():
             verdict = chirify_live_gate.check_live_mode_transition(
                 current_mode=True,
                 target_mode=False,

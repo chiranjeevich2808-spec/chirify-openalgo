@@ -620,11 +620,30 @@ def toggle_compliance_kill_switch():
 
     toggled_at_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
+    stopped_runs: list[int] = []
+    stop_errors: list[dict[str, Any]] = []
     with _KILL_SWITCH_LOCK:
         settings_db.Base.metadata.create_all(settings_db.engine)
         if engaged:
             os.environ["CHIRIFY_EMERGENCY_KILL_SWITCH"] = "true"
             current_analyze_mode = bool(apply_analyze_mode(True))
+            # Actively stop any running strategies so active threads cannot keep placing orders
+            try:
+                from services.strategy_module import engine as strat_engine
+                from services.strategy_module import store as strat_store
+
+                pod_user = _resolve_pod_username()
+                running_rows = strat_store.list_strategies(pod_user, status="running")
+                for row in running_rows or []:
+                    run_id = row.get("current_run_id") if isinstance(row, dict) else getattr(row, "current_run_id", None)
+                    if run_id:
+                        try:
+                            strat_engine.stop_run(int(run_id), pod_user, reason="dora_kill_switch")
+                            stopped_runs.append(int(run_id))
+                        except Exception as stop_exc:
+                            stop_errors.append({"run_id": int(run_id), "error": str(stop_exc)})
+            except Exception as list_exc:
+                logger.debug(f"[InternalOps] Kill-switch strategy stop sweep skipped: {list_exc}")
         else:
             os.environ["CHIRIFY_EMERGENCY_KILL_SWITCH"] = "false"
             current_analyze_mode = bool(settings_db.get_analyze_mode())
@@ -636,6 +655,8 @@ def toggle_compliance_kill_switch():
             "engaged": engaged,
             "reason": reason,
             "analyze_mode": current_analyze_mode,
+            "stopped_runs": stopped_runs,
+            "stop_errors": stop_errors,
             "timestamp_utc": toggled_at_utc,
             "tenant_id": (os.getenv("CHIRIFY_TENANT_ID") or "").strip() or None,
         },
@@ -650,6 +671,8 @@ def toggle_compliance_kill_switch():
                 "kill_switch_engaged": engaged,
                 "reason": reason,
                 "analyze_mode": current_analyze_mode,
+                "stopped_runs": stopped_runs,
+                "stop_errors": stop_errors,
                 "worm_audit": {
                     "seq_no": worm_record.seq_no,
                     "timestamp_utc": worm_record.timestamp_utc,
@@ -1498,27 +1521,27 @@ def internal_strategy_action(strategy_id: int, action: str):
                 400,
             )
 
-        if mode == "live":
-            if chirify_live_gate.is_emergency_kill_switch_engaged():
-                _emit_internal_worm_safe(
-                    "chirify_strategy_start_blocked",
+        if chirify_live_gate.is_emergency_kill_switch_engaged():
+            _emit_internal_worm_safe(
+                "chirify_strategy_start_blocked",
+                {
+                    "strategy_id": strategy_id,
+                    "mode": mode,
+                    "reason": "emergency_kill_switch_engaged",
+                },
+            )
+            return (
+                jsonify(
                     {
-                        "strategy_id": strategy_id,
-                        "mode": "live",
-                        "reason": "emergency_kill_switch_engaged",
-                    },
-                )
-                return (
-                    jsonify(
-                        {
-                            "status": "error",
-                            "code": "emergency_kill_switch_engaged",
-                            "message": "Emergency kill switch is engaged; live strategy execution is blocked.",
-                        }
-                    ),
-                    403,
-                )
+                        "status": "error",
+                        "code": "emergency_kill_switch_engaged",
+                        "message": "Emergency kill switch is engaged; strategy execution is blocked across Sandbox and Live.",
+                    }
+                ),
+                403,
+            )
 
+        if mode == "live":
             active_broker = _resolve_active_broker(username)
             verdict = chirify_live_gate.check_live_mode_transition(
                 current_mode=True,
@@ -2635,7 +2658,7 @@ def internal_mcp_invoke():
             )
 
         # 3b. Live-gate protection on analyzer_toggle(mode=False)
-        if tool_name == "analyzer_toggle":
+        if tool_name in {"analyzer_toggle", "toggle_analyzer_mode"}:
             target_mode = arguments.get("mode")
             if target_mode is False or str(target_mode).strip().lower() == "false":
                 lg_verdict = chirify_live_gate.check_live_mode_transition(

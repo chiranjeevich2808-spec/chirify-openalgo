@@ -64,6 +64,9 @@ _BSE_INDEX_UNDERLYINGS: frozenset[str] = frozenset({"SENSEX", "BANKEX"})
 _FALLBACK_SPOT_ANCHORS: dict[str, float] = {
     "NIFTY": 25800.0,
     "BANKNIFTY": 64600.0,
+    "FINNIFTY": 24200.0,
+    "MIDCPNIFTY": 12850.0,
+    "SENSEX": 84500.0,
     "RELIANCE": 1380.0,
     "TCS": 4120.0,
     "HDFCBANK": 1740.0,
@@ -77,6 +80,22 @@ _FALLBACK_SPOT_ANCHORS: dict[str, float] = {
     "BTCUSDT": 60150.0,
     "ETHUSDT": 3150.0,
     "SOLUSDT": 195.0,
+}
+
+_DERIVATIVE_LOT_SIZES: dict[str, int] = {
+    "NIFTY": 75,
+    "BANKNIFTY": 30,
+    "FINNIFTY": 65,
+    "MIDCPNIFTY": 120,
+    "SENSEX": 20,
+}
+
+_DERIVATIVE_BASE_IV: dict[str, float] = {
+    "NIFTY": 0.145,
+    "BANKNIFTY": 0.172,
+    "FINNIFTY": 0.162,
+    "MIDCPNIFTY": 0.184,
+    "SENSEX": 0.142,
 }
 
 
@@ -287,8 +306,8 @@ class SandboxMarketFeed:
         seconds_left = max((expiry_dt - now_utc).total_seconds(), 86400.0)
         t_years = seconds_left / (365.0 * 86400.0)
 
-        # Realistic volatility smile: higher ATM IV for BANKNIFTY, skew on OTM puts + convexity wing
-        base_atm_iv = 0.172 if underlying == "BANKNIFTY" else (0.145 if underlying == "NIFTY" else 0.24)
+        # Realistic volatility smile: calibrated ATM IV per benchmark index, skew on OTM puts + convexity wing
+        base_atm_iv = _DERIVATIVE_BASE_IV.get(underlying, 0.24)
         moneyness = (strike - spot) / max(spot, 1.0)
         # Put skew: lower strikes (moneyness < 0) carry higher IV; wing convexity adds smile curvature
         smile_iv = base_atm_iv - 0.35 * moneyness + 1.85 * (moneyness * moneyness)
@@ -306,11 +325,11 @@ class SandboxMarketFeed:
         ltp = _round_tick(max(tick, theo_price), tick)
 
         # Realistic OI peaking near ATM & round strikes; slightly heavier put OI near/below ATM (PCR ~1.05-1.20)
-        width = 0.025 if underlying in {"NIFTY", "BANKNIFTY"} else 0.05
+        width = 0.025 if underlying in _DERIVATIVE_LOT_SIZES else 0.05
         bell = math.exp(-0.5 * (moneyness / width) ** 2)
         round_boost = 1.45 if (int(round(strike)) % 500 == 0) else (1.15 if int(round(strike)) % 100 == 0 else 1.0)
         side_tilt = (1.18 if (opt_type == "PE" and strike <= spot) else 1.12 if (opt_type == "CE" and strike >= spot) else 0.72)
-        lot_size = 75 if underlying == "NIFTY" else (30 if underlying == "BANKNIFTY" else 1)
+        lot_size = _DERIVATIVE_LOT_SIZES.get(underlying, 1)
         base_lots = int(max(120, round(42000 * bell * round_boost * side_tilt * float(det_rng.uniform(0.82, 1.18)))))
         oi = base_lots * lot_size
         volume = int(max(lot_size * 10, round(oi * float(det_rng.uniform(0.18, 0.48)))))
@@ -346,7 +365,7 @@ class SandboxMarketFeed:
         open_p = _round_tick(ltp * 0.9985, tick)
         high_p = _round_tick(max(ltp, open_p) * 1.006, tick)
         low_p = _round_tick(min(ltp, open_p) * 0.994, tick)
-        lot_size = 75 if underlying == "NIFTY" else (30 if underlying == "BANKNIFTY" else 1)
+        lot_size = _DERIVATIVE_LOT_SIZES.get(underlying, 1)
         return {
             "anchor": ltp,
             "ltp": ltp,
